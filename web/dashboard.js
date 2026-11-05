@@ -147,7 +147,10 @@ async function connectTo(selected){
 }
 $('connect').onclick=()=>run(async()=>{
   if(!navigator.hid)throw Error('当前浏览器不支持 WebHID。请使用桌面 Chrome / Edge 打开本地配置页。');
-  const devices=await navigator.hid.requestDevice({filters:[{vendorId:0x054c,productId:0x0ce6},{vendorId:0x054c,productId:0x0df2},{vendorId:0x057e,productId:0x2009}]});
+  // Windows exposes Pro gameplay and configuration as separate HID TLCs.
+  // Only offer the vendor configuration collection for Nintendo identity;
+  // selecting the gameplay collection cannot read the F7/F8 feature reports.
+  const devices=await navigator.hid.requestDevice({filters:[{vendorId:0x054c,productId:0x0ce6},{vendorId:0x054c,productId:0x0df2},{vendorId:0x057e,productId:0x2009,usagePage:0xff00,usage:1}]});
   const selected=devices.find(supportsConfig);
   if(!selected)throw Error('未选择配置接口。Pro 模式请选择带 F7 配置报告的接收器接口，原装直连手柄不提供此接口。');
   await connectTo(selected);
@@ -199,7 +202,7 @@ $('import').onchange=e=>run(async()=>{
   if(json.format!=='ds5-local-v1'||!Array.isArray(json.bytes)||json.bytes.some(x=>!Number.isInteger(x)||x<0||x>255))throw Error('无效的配置文件');
   showConfig(encode(original,decode(new Uint8Array(json.bytes))));announce('配置已载入表单','点击「保存并应用」后才会写入接收器。');
 });
-$('diagnostic-export').onclick=()=>download('ds5-diagnostics.json',{app:'alpha.3',time:new Date().toISOString(),firmware,usb:device?{vendorId:device.vendorId,productId:device.productId,productName:device.productName}:null,config:original?decode(original):null,diagnostic,events});
+$('diagnostic-export').onclick=()=>download('ds5-diagnostics.json',{app:'alpha.4',time:new Date().toISOString(),firmware,usb:device?{vendorId:device.vendorId,productId:device.productId,productName:device.productName}:null,config:original?decode(original):null,diagnostic,events});
 
 $('readmap').onclick=()=>run(async()=>{
   await send(0xfb,new Uint8Array([3,Number($('profile').value)]));

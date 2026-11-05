@@ -30,10 +30,12 @@ const assert=require('node:assert/strict');
      }
    };
    window.fixtureDevice=device;
-   Object.defineProperty(navigator,'hid',{value:{async requestDevice(){return [device]},async getDevices(){return [device]},addEventListener(name,fn){listeners[name]=fn;}}});
+   Object.defineProperty(navigator,'hid',{value:{async requestDevice(options){window.hidFilters=options.filters;return [device]},async getDevices(){return [device]},addEventListener(name,fn){listeners[name]=fn;}}});
  });
  await page.goto(process.env.TEST_URL||'http://127.0.0.1:8765');await page.getByRole('button',{name:'连接接收器',exact:true}).click();
  await page.waitForFunction(()=>!document.getElementById('save').disabled);
+ const proFilter=await page.evaluate(()=>window.hidFilters.find(f=>f.vendorId===0x057e));
+ assert.equal(proFilter.usagePage,0xff00);assert.equal(proFilter.usage,1);
  assert.match(await page.locator('#battery').innerText(),/80/);
  await page.locator('#controller_mode').selectOption('3');
  await page.getByRole('button',{name:'保存并应用',exact:true}).click();
