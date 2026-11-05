@@ -24,7 +24,7 @@ def archive(path, files, manifest):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--version', default='v0.1.0-alpha.1')
+    parser.add_argument('--version', default='v0.1.0-alpha.2')
     args = parser.parse_args()
     if not args.version or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-' for c in args.version):
         parser.error('version must contain only letters, digits, dots or hyphens')

@@ -6,6 +6,18 @@ on:
 permissions:
   contents: read
 jobs:
+  windows-launcher:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Legacy Windows PowerShell launcher regression
+        shell: powershell
+        run: |
+          .\tests\launcher.test.ps1
+          python tests/server.test.py
   protocol-and-web:
     runs-on: ubuntu-latest
     steps:
@@ -21,6 +33,7 @@ jobs:
           ./build-tests/switch-pro-test
       - run: npm ci
       - run: npm test
+      - run: python3 tests/server.test.py
       - run: npx playwright install --with-deps chromium
       - name: Browser regression with simulated WebHID
         run: |

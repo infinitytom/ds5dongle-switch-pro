@@ -6,5 +6,6 @@ if ($taskLauncher) {
 } elseif ($taskPython -and $taskPython.Source -notlike '*WindowsApps*') {
     & $taskPython.Source (Join-Path $PSScriptRoot 'web\serve.py')
 } else {
-    throw '需要 Python 3：安装后重新运行此脚本。'
+    throw 'Python 3 is required. Install Python 3 and run this launcher again.'
 }
+exit $LASTEXITCODE

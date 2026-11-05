@@ -20,6 +20,8 @@
 
 详细步骤：[中文使用说明](docs/SWITCH_PRO_CN.md) · [验证记录](docs/VALIDATION.md) · [上游说明](README_UPSTREAM.md)
 
+`v0.1.0-alpha.2` 修复 Windows PowerShell 启动脚本的编码错误，并支持重复启动时复用已有本地服务。已刷入 alpha.1 固件的用户只需更新离线配置包，**无需重刷固件**。
+
 ## 当前功能
 
 | 功能 | 实现与限制 |
