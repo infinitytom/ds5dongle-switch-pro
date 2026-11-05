@@ -4,7 +4,7 @@
 
 基于 [sqlCRT/ds5dongle-bl618-opensource](https://github.com/sqlCRT/ds5dongle-bl618-opensource) 的实验性扩展，新增 Switch Pro 协议、HD 震动波形转译和完全离线的本地配置页。保留上游历史与 GPL-3.0 许可。
 
-> **实验预发行版，尚未实机验证。** 已完成软件测试和 LCTech BL616 Full-Speed 固件构建；不能据此保证 Switch 1/2 枚举、真实体感和触觉效果。请确认板型并保留原固件，再自行进行硬件测试。
+> **实验预发行版，已通过部分 Windows 实机测试。** LCTech BL616 的 Pro USB 握手、SDL3 实际打开与 Pro+麦克风音频采集已通过；Switch 1/2 枚举、完整按键、真实体感和触觉效果仍待验证。请确认板型并保留原固件，再自行进行硬件测试。
 
 ## 下载与使用
 
@@ -22,7 +22,7 @@
 
 `v0.1.0-alpha.2` 是启动器编码补丁；`alpha.3` 包含 USB 固件修复，需更新配置包并刷入新固件。
 
-**alpha.3 需要更新固件**：已在旧固件上复现 SDL 打开时报 `Couldn't setup USB mode`，定位到 BL616 SDK 对同编号 IN/OUT 端点使用同一 FIFO。新版使用 **IN 0x84 / OUT 0x01**，并增加标准 0x3F 输入报告、可选 USB 麦克风、实时诊断和重新设计的控制台。新固件的主机识别与音频仍需刷入后复测，不能把旧版的测试结果当作新版硬件验收。
+**alpha.3 需要更新固件**：已在旧固件上复现 SDL 打开时报 `Couldn't setup USB mode`，定位到 BL616 SDK 对同编号 IN/OUT 端点使用同一 FIFO。新版使用 **IN 0x84 / OUT 0x01**，并增加标准 0x3F 输入报告、可选 USB 麦克风、实时诊断和重新设计的控制台。2026-11-06 已在新固件上通过 Windows USB 握手、SDL3 打开及麦克风真实采集，详见验证记录。
 
 **alpha.4** 进一步将 Pro 模式的网页设备选择限定到厂商配置接口（Usage Page `0xFF00`），避免误选到不能读配置的游戏手柄接口。其固件与 alpha.3 相同，版本标记仍为 `Pro-dev1 r3`。
 
@@ -35,7 +35,7 @@
 | 体感 | 双方 IMU 单位与坐标系转换、DualSense 工厂校准、Pro 量程设置；每报告重复当前样本三次 |
 | HD 震动 | 左右高低频参数解码 → 连续相位 3 kHz 波形 → 上游 DualSense 蓝牙触觉通道 |
 | 本地配置 | 控制台、实时按键/摇杆、电量/信号、自动保存重连、映射、音频电平测试和诊断导出 |
-| 麦克风 | Pro + USB 麦克风模式提供独立 UAC1 2ch/48kHz 输入，单声道蓝牙麦克风复制到双声道；主机兼容性待测 |
+| 麦克风 | Pro + USB 麦克风模式提供独立 UAC1 2ch/48kHz 输入，单声道蓝牙麦克风复制到双声道；Windows 实际采集通过，Switch 兼容性待测 |
 | 停止处理 | 震动超时、禁用、USB 挂起/复位与手柄断线处理 |
 
 按实体位置映射：**○→A、×→B、△→X、□→Y**；Create→−、Options→+、PS→HOME、触摸板按下→Capture。L2/R2 转为数字 ZL/ZR，不保留模拟行程。
@@ -81,4 +81,4 @@ Windows 可运行 `tests\run-native.cmd`（Visual Studio C++ Build Tools）。�
 
 ---
 
-**English:** Experimental DualSense-to-Switch-Pro USB bridge for the LCTech BL616, with offline WebHID configuration and frequency-preserving haptic synthesis. Software tests and firmware builds pass; real controller/console compatibility is **not hardware verified**. This is an unofficial GPL-3.0 fork; upstream attribution is preserved.
+**English:** Experimental DualSense-to-Switch-Pro USB bridge for the LCTech BL616, with offline WebHID configuration and frequency-preserving haptic synthesis. Windows hardware tests pass for USB handshakes, SDL3 gamepad opening and microphone capture; full input, motion, haptics and Switch console compatibility remain unverified. This is an unofficial GPL-3.0 fork; upstream attribution is preserved.
