@@ -3,6 +3,7 @@
 #include "bt_hid_host.h"
 #include "ds5_protocol.h"
 #include "config.h"
+#include "usb_gamepad.h"
 
 #include "FreeRTOS.h"
 #include "semphr.h"
@@ -302,7 +303,7 @@ static int send_audio_report(void)
     memcpy(pkt + 12 + HAPTIC_BUF_SIZE, haptic_slots[1], HAPTIC_BUF_SIZE);
 
     /* Speaker Opus (tag 0xD3/0xD6, 2x 200-byte blocks) */
-    bool speaker_enabled = !config_get()->disable_speaker;
+    bool speaker_enabled = !usb_gamepad_switch_mode() && !config_get()->disable_speaker;
     if (speaker_enabled) {
         pkt[140] = plug_headset ? DS5_AUDIO_TAG_HEADSET : DS5_AUDIO_TAG_SPEAKER;
         pkt[141] = OPUS_OUT_SIZE;
@@ -484,8 +485,29 @@ void audio_task(void *arg)
     LOG_INF("[AUDIO] Task started\n");
 
     uint32_t send_fail_streak = 0;
+    uint64_t pro_next_us = 0;
 
     for (;;) {
+        if (usb_gamepad_switch_mode()) {
+            uint64_t now = bflb_mtimer_get_time_us();
+            if (bt_hid_host_get_state() == BT_HID_STATE_CONNECTED && now >= pro_next_us) {
+                /* 64 stereo samples at 3kHz = 21 1/3ms per BT packet.
+                 * No Opus work and no USB Audio stream needed in Pro mode. */
+                for (unsigned slot = 0; slot < 2; ++slot)
+                    usb_gamepad_switch_render((uint32_t)(now / 1000),
+                        config_get()->haptics_gain, haptic_slots[slot], 32);
+                if (send_audio_report() != 0) {
+                    if (++send_fail_streak >= AUDIO_SEND_FAIL_MAX) {
+                        bt_hid_host_disconnect();
+                        send_fail_streak = 0;
+                    }
+                } else send_fail_streak = 0;
+                pro_next_us = pro_next_us ? pro_next_us + 21333 : now + 21333;
+                if (pro_next_us < now) pro_next_us = now + 21333;
+            }
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
+        }
         if (xSemaphoreTake(sem, pdMS_TO_TICKS(25)) == pdTRUE) {
             bool a_active = usb_audio_is_active();
             bool a_read   = a_active ? usb_audio_read(pcm_block) : false;

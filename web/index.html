@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DS5 Dongle · 本地配置</title><link rel="stylesheet" href="style.css"></head>
+<body><main><header><div><span class="eyebrow">DS5 DONGLE / LOCAL CONTROL</span><h1>一个手柄，切换主场。</h1><p>DualSense · Edge · Switch Pro</p></div><span class="local">● 本地离线运行</span></header>
+<section class="connect"><div><h2 id="device">尚未连接接收器</h2><p id="status" role="status">使用桌面版 Chrome 或 Edge，通过 USB 连接接收器。</p></div><button id="connect">连接接收器</button><button id="refresh" disabled>重新读取</button></section>
+<aside>Switch Pro 为实验模式：主机需开启「Pro 手柄的有线通信」。○ → A，× → B，△ → X，□ → Y，PS → HOME，触摸板按下 → 截图。高清震动、体感方向和 Switch 1/2 兼容性仍需实机验证；不提供 NFC、主机唤醒或 HD Rumble 2。</aside>
+<form id="settings"><section><h2>接收器设置</h2><p>读取后可编辑。USB 模式、序列号等设置需要保存并重启后生效。</p><fieldset id="fields" disabled></fieldset></section>
+<div class="actions"><button id="save" type="submit" disabled>保存到接收器</button><button id="reboot" type="button" disabled>保存并重启</button><button id="export" type="button" disabled>导出配置</button><label class="import">导入配置<input id="import" type="file" accept="application/json,.json" disabled></label></div></form>
+<section><h2>按键映射</h2><p>映射先作用于 DualSense 按键，再转换为 Switch 布局。支持两组游戏手柄按键配置；键盘/鼠标目标仅在 DS 模式有效。</p><div class="actions"><select id="profile" aria-label="映射配置"><option value="0">配置 1</option><option value="1">配置 2</option></select><button id="readmap" disabled>读取映射</button><button id="savemap" disabled>保存映射</button><button id="activemap" disabled>启用这组映射</button></div><fieldset id="mapping" disabled></fieldset></section>
+<section class="support"><div><h2>支持开发</h2><p>如果这个开源项目对你有帮助，欢迎自愿赞赏支持开发与硬件测试。</p><p>支付宝收款名称：<strong>infinitytom(*昊)</strong>。赞赏不影响功能使用。</p></div><a href="assets/alipay-donate.jpg" target="_blank" rel="noopener"><img src="assets/alipay-donate.jpg" alt="支付宝赞赏码，收款名称 infinitytom(*昊)" width="200" height="300" loading="lazy"></a></section>
+<footer>无外部脚本、无云端请求。设置通过 WebHID 直接写入 USB 接收器。<br>修改固件前请保留原始可用固件；本站不执行刷机。</footer></main><script type="module" src="app.js"></script></body></html>

@@ -29,6 +29,9 @@ int usb_gamepad_init(usb_gamepad_output_cb_t output_cb);
 
 int usb_gamepad_send_raw_input(const uint8_t *payload);
 bool usb_gamepad_is_ready(void);
+bool usb_gamepad_switch_mode(void);
+void usb_gamepad_on_bt_disconnect(void);
+void usb_gamepad_switch_render(uint32_t ms, float gain, int8_t *stereo, unsigned frames);
 int  usb_gamepad_send_kbd_report(const uint8_t *report, uint8_t len);
 int  usb_gamepad_send_consumer_report(uint16_t usage);
 int  usb_gamepad_send_mouse_report(uint8_t buttons, int8_t dx, int8_t dy, int8_t wheel);

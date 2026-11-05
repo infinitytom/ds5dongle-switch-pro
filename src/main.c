@@ -360,6 +360,7 @@ static void on_hid_state(enum bt_hid_host_state state)
             neutral[3] = 0x7F; /* RY center */
             neutral[7] = DS5_DPAD_NONE; /* D-pad neutral */
             usb_gamepad_send_raw_input(neutral);
+            usb_gamepad_on_bt_disconnect();
         }
         ds5_connected = false;
         usb_fwd_count = 0;
@@ -1017,6 +1018,7 @@ static bool should_use_dse(void)
     uint8_t mode = config_controller_mode();
     if (mode == 0) return false;
     if (mode == 1) return true;
+    if (mode == 3) return false;
     return config_dse_detected();
 }
 
@@ -1033,7 +1035,11 @@ static void usb_task(void *arg)
 
     usb_gamepad_set_dse_mode(should_use_dse());
     usb_gamepad_set_polling_rate(config_polling_mode());
-    usb_gamepad_init(on_usb_output);
+    if (usb_gamepad_init(on_usb_output) != 0) {
+        LOG_ERR("[USB] Initialization failed\n");
+        vTaskDelete(NULL);
+        return;
+    }
     usb_gamepad_set_suspend_hooks(usb_wake_on_suspend,
                                   usb_wake_on_resume,
                                   usb_wake_on_configured);

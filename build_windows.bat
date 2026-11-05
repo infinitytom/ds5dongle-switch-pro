@@ -24,6 +24,14 @@ if "%TOOLCHAIN_PATH%"=="" set "TOOLCHAIN_PATH=%USERPROFILE%\Desktop\toolchain_gc
 if "%BOARD_TYPE%"=="" set "BOARD_TYPE=lctech616"
 if "%USB_SPEED%"=="" set "USB_SPEED=fs"
 if "%NUMBER_OF_PROCESSORS%"=="" set "NUMBER_OF_PROCESSORS=8"
+if /i not "%BOARD_TYPE%"=="lctech616" if /i not "%BOARD_TYPE%"=="aim61" if /i not "%BOARD_TYPE%"=="m0sdock" (
+    echo [ERROR] Unknown BOARD_TYPE: %BOARD_TYPE%
+    exit /b 1
+)
+if /i not "%USB_SPEED%"=="fs" if /i not "%USB_SPEED%"=="hs" (
+    echo [ERROR] USB_SPEED must be fs or hs.
+    exit /b 1
+)
 
 rem ---- sanity checks ----
 if not exist "%BL_SDK_BASE%\project.build" (
@@ -39,7 +47,7 @@ if not exist "%TOOLCHAIN_PATH%\bin\riscv64-unknown-elf-gcc.exe" (
 )
 
 rem ---- PATH ----
-set "PATH=%TOOLCHAIN_PATH%\bin;%BL_SDK_BASE%\tools\make;%BL_SDK_BASE%\tools\cmake\bin;%BL_SDK_BASE%\tools\ninja;%PATH%"
+set "PATH=%~dp0tools\python-shim;%TOOLCHAIN_PATH%\bin;%BL_SDK_BASE%\tools\make;%BL_SDK_BASE%\tools\cmake\bin;%BL_SDK_BASE%\tools\ninja;%PATH%"
 
 set "ACTION=%~1"
 if "%ACTION%"=="" set "ACTION=build"
@@ -53,13 +61,16 @@ if /i "%ACTION%"=="rebuild" (
     if exist build make clean 2>nul
 )
 call :build_one
+if errorlevel 1 exit /b 1
 goto :done
 
 :both
 set "USB_SPEED=fs"
 call :build_one
+if errorlevel 1 exit /b 1
 set "USB_SPEED=hs"
 call :build_one
+if errorlevel 1 exit /b 1
 goto :done
 
 :build_one
@@ -102,19 +113,24 @@ goto :done
     set "OUT_DIR=firmware\%BOARD_TYPE%"
     if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"
     copy /y "build\build_out\ds5dongle_bl618_bl616.bin" "%OUT_DIR%\ds5dongle-%BOARD_TYPE%%SPEED_SUFFIX%.bin" >nul
+    if errorlevel 1 exit /b 1
     copy /y "build\build_out\boot2_bl616_isp_release_v8.1.8.bin" "%OUT_DIR%\" >nul
+    if errorlevel 1 exit /b 1
     copy /y "build\build_out\partition.bin" "%OUT_DIR%\" >nul
+    if errorlevel 1 exit /b 1
     echo [build] Output: %OUT_DIR%\ds5dongle-%BOARD_TYPE%%SPEED_SUFFIX%.bin
     goto :eof
 
 :clean
 make clean
+if errorlevel 1 exit /b 1
 goto :done
 
 :flash
 set "COMX=%~2"
 if "%COMX%"=="" set "COMX=COM5"
 make flash COMX=%COMX%
+if errorlevel 1 exit /b 1
 goto :done
 
 :done

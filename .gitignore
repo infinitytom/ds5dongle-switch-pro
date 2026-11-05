@@ -1,4 +1,12 @@
 build/
+build-tests/
+__pycache__/
+research/
+node_modules/
+release/
+*.s
+*.i
+*.su
 bouffalo_sdk_ds5/
 *.o
 *.a

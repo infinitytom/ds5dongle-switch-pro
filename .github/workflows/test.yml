@@ -1,0 +1,33 @@
+name: Software tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  protocol-and-web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Native protocol tests with sanitizers
+        run: |
+          mkdir -p build-tests
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -g -Isrc tests/switch_pro_test.c src/switch_pro.c -lm -o build-tests/switch-pro-test
+          ./build-tests/switch-pro-test
+      - run: npm ci
+      - run: npm test
+      - run: npx playwright install --with-deps chromium
+      - name: Browser regression with simulated WebHID
+        run: |
+          python3 -m http.server 8765 --bind 127.0.0.1 --directory web >build-tests/http.log 2>&1 &
+          node tests/browser.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: browser-preview
+          path: docs/local-config.png

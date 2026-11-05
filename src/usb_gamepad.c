@@ -20,6 +20,89 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "queue.h"
+#include "switch_pro.h"
+
+/* Latched at enumeration: changing saved settings requires a reboot. */
+static bool current_switch_mode;
+static volatile bool usb_configured = false;
+static volatile bool pro_reset_pending;
+static volatile uint32_t pro_generation;
+typedef struct {
+    uint8_t bytes[64];
+    uint32_t len;
+    uint32_t generation;
+} pro_output_entry_t;
+static struct switch_pro pro;
+static uint8_t pro_mac[6];
+#define GAMEPAD_IN_EP (current_switch_mode ? 0x81 : USB_GAMEPAD_EP_IN)
+static QueueHandle_t pro_output_queue;
+static struct usbd_endpoint pro_ep_out;
+static USB_NOCACHE_RAM_SECTION uint8_t pro_out_buf[64];
+static uint8_t pro_latest[64];
+static uint8_t pro_replies[16][64];
+static volatile unsigned pro_reply_head, pro_reply_tail;
+
+/* Raw Pro reports plus a vendor TLC for local WebHID configuration. */
+#define PRO_IN(id) 0x85,id,0x09,0x01,0x95,0x3f,0x81,0x02
+#define PRO_OUT(id) 0x85,id,0x09,0x02,0x95,0x3f,0x91,0x02
+static const uint8_t pro_report_desc[] = {
+    0x05,0x01,0x09,0x05,0xa1,0x01,0x06,0x00,0xff,
+    0x15,0x00,0x26,0xff,0x00,0x75,0x08,
+    PRO_IN(0x21),PRO_IN(0x30),PRO_IN(0x81),
+    PRO_OUT(0x01),PRO_OUT(0x10),PRO_OUT(0x80),0xc0,
+    0x06,0x00,0xff,0x09,0x01,0xa1,0x01,
+    0x15,0x00,0x26,0xff,0x00,0x75,0x08,0x95,0x3f,
+    0x85,0xf6,0x09,0x01,0xb1,0x02,
+    0x85,0xf7,0x09,0x02,0xb1,0x02,
+    0x85,0xf8,0x09,0x03,0xb1,0x02,
+    0x85,0xf9,0x09,0x04,0xb1,0x02,
+    0x85,0xfb,0x09,0x05,0x95,0x7f,0xb1,0x02,0xc0
+};
+static uint8_t pro_config_desc[] = {
+    9,2,41,0,1,1,0,0x80,250,
+    9,4,0,0,2,3,0,0,0,
+    9,0x21,0x11,1,0,1,0x22,sizeof(pro_report_desc)&255,sizeof(pro_report_desc)>>8,
+    7,5,0x81,3,64,0,8,
+    7,5,0x01,3,64,0,8
+};
+
+bool usb_gamepad_switch_mode(void) { return current_switch_mode; }
+void usb_gamepad_on_bt_disconnect(void)
+{
+    if (!current_switch_mode) return;
+    taskENTER_CRITICAL();
+    switch_pro_disconnect(&pro);
+    taskEXIT_CRITICAL();
+}
+void usb_gamepad_switch_render(uint32_t ms, float gain, int8_t *stereo, unsigned frames)
+{
+    static float phases[2][2];
+    struct switch_pro snapshot;
+    taskENTER_CRITICAL();
+    snapshot = pro;
+    if (!usb_configured || !pro.usb_stream || pro_reset_pending) snapshot.vibration = false;
+    taskEXIT_CRITICAL();
+    for (unsigned c=0;c<2;c++) memcpy(snapshot.motor[c].phase, phases[c], sizeof(phases[c]));
+    switch_pro_render(&snapshot, ms, gain, stereo, frames);
+    for (unsigned c=0;c<2;c++) memcpy(phases[c], snapshot.motor[c].phase, sizeof(phases[c]));
+}
+
+static void pro_receive_isr(const uint8_t *data, uint32_t len)
+{
+    uint8_t packet[64] = {0};
+    if (!len || len > sizeof(packet) || !pro_output_queue) return;
+    memcpy(packet, data, len);
+    /* Preserve actual length; the queue must not turn truncated packets valid. */
+    pro_output_entry_t item;
+    memcpy(item.bytes, packet, 64); item.len = len;
+    item.generation = pro_generation;
+    xQueueSendFromISR(pro_output_queue, &item, NULL);
+}
+static void pro_out_handler(uint8_t busid, uint8_t ep, uint32_t nbytes)
+{
+    pro_receive_isr(pro_out_buf, nbytes);
+    usbd_ep_start_read(busid, ep, pro_out_buf, sizeof(pro_out_buf));
+}
 
 #if defined(BOARD_LCTECH_616)
   #ifdef FORCE_FS_MODE
@@ -504,6 +587,10 @@ static const uint8_t *desc_device_cb(uint8_t speed)
 static const uint8_t *desc_config_cb(uint8_t speed)
 {
     (void)speed;
+    if (current_switch_mode) {
+        pro_config_desc[33] = pro_config_desc[40] = speed == USB_SPEED_HIGH ? 7 : 8;
+        return pro_config_desc;
+    }
     return config_desc;
 }
 
@@ -527,6 +614,13 @@ static uint8_t other_speed_desc[USB_HID_CONFIG_SIZE];
 static const uint8_t *desc_other_speed_cb(uint8_t speed)
 {
     (void)speed;
+    if (current_switch_mode) {
+        memcpy(other_speed_desc, pro_config_desc, sizeof(pro_config_desc));
+        other_speed_desc[1] = 7;
+        /* High-speed interrupt interval 7 is 8 ms. */
+        other_speed_desc[33] = other_speed_desc[40] = speed == USB_SPEED_HIGH ? 8 : 7;
+        return other_speed_desc;
+    }
     memcpy(other_speed_desc, config_desc, sizeof(other_speed_desc));
     other_speed_desc[1] = 0x07;
     uint16_t total = other_speed_desc[2] | (other_speed_desc[3] << 8);
@@ -553,8 +647,8 @@ static const char *desc_string_cb(uint8_t speed, uint8_t index)
     (void)speed;
     switch (index) {
     case 0: return "\x09\x04";
-    case 1: return "Sony Interactive Entertainment";
-    case 2: return current_dse_mode
+    case 1: return current_switch_mode ? "Nintendo Co., Ltd." : "Sony Interactive Entertainment";
+    case 2: return current_switch_mode ? "Pro Controller" : current_dse_mode
                  ? "DualSense Edge Wireless Controller"
                  : "DualSense Wireless Controller";
     case 3:
@@ -616,7 +710,6 @@ static struct usbd_endpoint  hid_ep_in;
 static struct usbd_interface kbd_intf;
 static struct usbd_endpoint  kbd_ep_in;
 
-static volatile bool usb_configured = false;
 static volatile bool ep_in_busy = false;
 static volatile bool kbd_ep_busy = false;
 static volatile uint64_t kbd_ep_busy_since_us = 0;
@@ -637,6 +730,18 @@ static volatile bool    pending_active = false;
 ATTR_TCM_SECTION
 static void try_send_pending(void)
 {
+    if (current_switch_mode) {
+        if (!usb_configured || ep_in_busy) return;
+        bool reply = pro_reply_tail != pro_reply_head;
+        if (!reply && !pending_active) return;
+        memcpy(usb_in_buf, reply ? pro_replies[pro_reply_tail] : pro_latest, 64);
+        ep_in_busy = true;
+        if (usbd_ep_start_write(0, GAMEPAD_IN_EP, usb_in_buf, 64) < 0) {
+            ep_in_busy = false;
+        } else if (reply) pro_reply_tail = (pro_reply_tail + 1) % 16;
+        else pending_active = false;
+        return;
+    }
     if (!pending_active || !usb_configured || ep_in_busy)
          return;
     usb_in_buf[0] = DS5_USB_REPORT_ID_INPUT;
@@ -677,6 +782,7 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
         usb_configured = true;
         ep_in_busy = false;
         kbd_ep_busy = false;
+        if (current_switch_mode) usbd_ep_start_read(busid, 0x01, pro_out_buf, 64);
         LOG_INF("[USB-EVT] CONFIGURED — host enumeration complete!\n");
         if (hook_configured)
             hook_configured();
@@ -686,6 +792,14 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
         ep_in_busy = false;
         kbd_ep_busy = false;
         first_usb_send_logged = false;
+        if (current_switch_mode) {
+            ++pro_generation;
+            pro_reset_pending = true;
+            pro_reply_head = pro_reply_tail = 0;
+            pending_active = false;
+            pro_output_entry_t discarded;
+            while (pro_output_queue && xQueueReceiveFromISR(pro_output_queue, &discarded, NULL) == pdTRUE) {}
+        }
         usb_audio_stop();
         usb_audio_mic_stop();
         audio_set_mic_active(false);
@@ -715,6 +829,7 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
         LOG_INF("[USB-EVT] CONNECTED (VBUS detected)\n");
         break;
     case USBD_EVENT_DISCONNECTED:
+        usb_configured = false;
         LOG_INF("[USB-EVT] DISCONNECTED (VBUS lost)\n");
         break;
     case USBD_EVENT_SET_REMOTE_WAKEUP:
@@ -748,6 +863,43 @@ void usb_gamepad_set_dse_mode(bool dse)
 ATTR_TCM_SECTION
 void usb_gamepad_process_deferred(void)
 {
+    if (current_switch_mode && pro_output_queue) {
+        if (pro_reset_pending) {
+            taskENTER_CRITICAL();
+            pro_reset_pending = false;
+            switch_pro_init(&pro, pro_mac);
+            taskEXIT_CRITICAL();
+        }
+        pro_output_entry_t item;
+        uint8_t response[64];
+        uint32_t ms = (uint32_t)(bflb_mtimer_get_time_us() / 1000);
+        /* Stop draining before the reply ring fills: handshake replies take
+         * precedence over periodic input and must never be overwritten. */
+        while ((pro_reply_head + 1) % 16 != pro_reply_tail &&
+               xQueueReceive(pro_output_queue, &item, 0) == pdTRUE) {
+            taskENTER_CRITICAL();
+            if (pro_reset_pending) {
+                pro_reset_pending = false;
+                switch_pro_init(&pro, pro_mac);
+            }
+            if (item.generation != pro_generation) { taskEXIT_CRITICAL(); continue; }
+            unsigned n = switch_pro_output(&pro, item.bytes, item.len, ms, response);
+            if (n) {
+                memcpy(pro_replies[pro_reply_head], response, 64);
+                pro_reply_head = (pro_reply_head + 1) % 16;
+            }
+            taskEXIT_CRITICAL();
+        }
+        static uint32_t last_input_ms;
+        if ((uint32_t)(ms - last_input_ms) >= 8 && pro.usb_stream) {
+            taskENTER_CRITICAL();
+            switch_pro_report(&pro, ms, pro_latest);
+            pending_active = true;
+            taskEXIT_CRITICAL();
+            last_input_ms = ms;
+        }
+        taskENTER_CRITICAL(); try_send_pending(); taskEXIT_CRITICAL();
+    }
     if (usb_reset_pending) {
         usb_reset_pending = false;
         config_save();
@@ -784,6 +936,16 @@ void usb_gamepad_process_deferred(void)
 
 int usb_gamepad_init(usb_gamepad_output_cb_t output_cb)
 {
+    current_switch_mode = config_controller_mode() == 3;
+    if (current_switch_mode) {
+        uint8_t chip[8]; bflb_efuse_get_chipid(chip);
+        memcpy(pro_mac, chip, 6); pro_mac[0] = (pro_mac[0] | 2) & 0xfe;
+        switch_pro_init(&pro, pro_mac);
+        pro_output_queue = xQueueCreate(16, sizeof(pro_output_entry_t));
+        if (!pro_output_queue) return -1;
+        device_desc[8] = 0x7e; device_desc[9] = 0x05;
+        device_desc[10] = 0x09; device_desc[11] = 0x20;
+    }
     output_callback = output_cb;
     memset(usb_in_buf, 0, sizeof(usb_in_buf));
     memset(kbd_buf, 0, sizeof(kbd_buf));
@@ -805,9 +967,9 @@ int usb_gamepad_init(usb_gamepad_output_cb_t output_cb)
      * enable_wake now uses USB remote-wake signal only (F15 key removed) —
      * no keyboard interface needed. remap KBD type is disabled for now.
      * REMOTE-WAKEUP bit stays in bmAttributes when wake is enabled. */
-    const bool need_kbd = remap_has_kbd_targets() ||
+    const bool need_kbd = !current_switch_mode && (remap_has_kbd_targets() ||
                           config_get()->ps_shortcut_enabled ||
-                          (config_get()->tp_mode == 2 || config_get()->tp_mode == 3);
+                          (config_get()->tp_mode == 2 || config_get()->tp_mode == 3));
     const bool need_remote_wake = config_get()->enable_wake || need_kbd;
     if (need_kbd) {
         config_desc[KBD_SUBCLASS_OFF] = 0x00; /* No subclass (multi-TLC, not pure boot) */
@@ -832,12 +994,13 @@ int usb_gamepad_init(usb_gamepad_output_cb_t output_cb)
            (unsigned)sizeof(device_desc), (unsigned)sizeof(config_desc));
 
     /* Interface 0,1,2: Audio Control + Streaming OUT + Streaming IN */
-    usb_audio_register(0);
+    if (!current_switch_mode) usb_audio_register(0);
     LOG_INF("[USB-INIT] Audio interfaces registered\n");
 
     /* Interface 3: Gamepad — select descriptor based on DSE mode */
     const uint8_t *rd  = current_dse_mode ? hid_report_desc_dse : hid_report_desc_ds;
     uint16_t rd_len    = current_dse_mode ? sizeof(hid_report_desc_dse) : sizeof(hid_report_desc_ds);
+    if (current_switch_mode) { rd = pro_report_desc; rd_len = sizeof(pro_report_desc); }
     usbd_add_interface(0, usbd_hid_init_intf(0, &hid_intf, rd, rd_len));
     LOG_INF("[USB-INIT] Gamepad HID intf added (report_desc=%uB, DSE=%d)\n",
            rd_len, current_dse_mode);
@@ -850,9 +1013,13 @@ int usb_gamepad_init(usb_gamepad_output_cb_t output_cb)
         LOG_INF("[USB-INIT] Keyboard HID intf added\n");
     }
 
-    hid_ep_in.ep_addr = USB_GAMEPAD_EP_IN;
+    hid_ep_in.ep_addr = GAMEPAD_IN_EP;
     hid_ep_in.ep_cb = hid_ep_in_handler;
     usbd_add_endpoint(0, &hid_ep_in);
+    if (current_switch_mode) {
+        pro_ep_out.ep_addr = 0x01; pro_ep_out.ep_cb = pro_out_handler;
+        usbd_add_endpoint(0, &pro_ep_out);
+    }
 
 
     if (need_kbd) {
@@ -963,6 +1130,15 @@ void usb_gamepad_set_polling_rate(uint8_t mode)
 ATTR_TCM_SECTION
 int usb_gamepad_send_raw_input(const uint8_t *payload)
 {
+    if (current_switch_mode) {
+        const uint8_t *cal; uint16_t cal_len;
+        taskENTER_CRITICAL();
+        switch_pro_input(&pro, payload);
+        if (bt_hid_host_get_cached_feature(0x05, &cal, &cal_len))
+            switch_pro_calibration(&pro, cal, cal_len);
+        taskEXIT_CRITICAL();
+        return 0;
+    }
     memcpy((void *)pending_payload, payload, DS5_USB_INPUT_PAYLOAD_LEN);
     pending_active = true;
     try_send_pending();
@@ -1158,10 +1334,10 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id,
             *len  = 1 + cfg_len;
             LOG_INF("[USB] GET_REPORT(0xF7) → config %u bytes\n", cfg_len);
         } else if (report_id == 0xF8) {
-            uint16_t ver_len = strlen(FIRMWARE_VERSION);
+            uint16_t ver_len = strlen(FIRMWARE_VERSION " Pro-dev1");
             if (ver_len > FEATURE_DATA_MAX)
                 ver_len = FEATURE_DATA_MAX;
-            memcpy(feature_resp_buf + 1, FIRMWARE_VERSION, ver_len);
+            memcpy(feature_resp_buf + 1, FIRMWARE_VERSION " Pro-dev1", ver_len);
             *data = feature_resp_buf;
             *len  = 1 + ver_len;
             LOG_INF("[USB] GET_REPORT(0xF8) → firmware version\n");
@@ -1207,6 +1383,8 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id,
         }
         return;
     }
+
+    if (current_switch_mode) { *len = 0; return; }
 
     /* DSE profile reports (0x70-0x7B): NAK while prefetch in progress
      * so the PS Accessories app retries instead of caching empty data. */
@@ -1255,6 +1433,14 @@ void usbd_hid_set_report(uint8_t busid, uint8_t intf, uint8_t report_id,
     if (report_len > 0 && report[0] == report_id) {
         payload++;
         payload_len--;
+    }
+
+    if (current_switch_mode && report_type == 0x02) {
+        uint8_t packet[64];
+        if (payload_len > 63) return;
+        packet[0] = report_id; memcpy(packet + 1, payload, payload_len);
+        pro_receive_isr(packet, payload_len + 1);
+        return;
     }
 
     /* Dongle config command (0xF6 SET) */
@@ -1315,6 +1501,8 @@ void usbd_hid_set_report(uint8_t busid, uint8_t intf, uint8_t report_id,
         }
         return;
     }
+
+    if (current_switch_mode) return;
 
     /* DSE profile writes (0x60-0x62) and unlock (0x80) — forward + notify */
     if (report_type == 0x03 && payload_len > 0 &&

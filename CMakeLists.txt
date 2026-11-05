@@ -18,6 +18,7 @@ target_sources(app PRIVATE
     src/bt_hid_host.c
     src/ds5_protocol.c
     src/usb_gamepad.c
+    src/switch_pro.c
     src/ds5_usb_audio.c
     src/audio.c
     src/usb_wake.c
