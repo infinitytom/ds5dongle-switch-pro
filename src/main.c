@@ -425,6 +425,7 @@ static void on_hid_state(enum bt_hid_host_state state)
     }
 
     case BT_HID_STATE_CONNECTED: {
+        if (usb_audio_mic_is_active()) audio_set_mic_active(true);
         connecting_start_tick = 0;
         bool is_dse = bt_hid_host_is_dse();
         uint8_t mode = config_controller_mode();
@@ -1018,7 +1019,7 @@ static bool should_use_dse(void)
     uint8_t mode = config_controller_mode();
     if (mode == 0) return false;
     if (mode == 1) return true;
-    if (mode == 3) return false;
+    if (mode >= 3) return false;
     return config_dse_detected();
 }
 

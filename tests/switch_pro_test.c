@@ -1,4 +1,5 @@
 #include "switch_pro.h"
+#include "switch_usb.h"
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
@@ -12,6 +13,39 @@ static unsigned ux(const uint8_t *p){return p[0]|(p[1]&15)<<8;}
 static unsigned uy(const uint8_t *p){return (p[1]>>4)|p[2]<<4;}
 static int rd16(const uint8_t *p){return (int16_t)(p[0]|p[1]<<8);}
 static void wr16(uint8_t *p,int v){p[0]=(uint8_t)v;p[1]=(uint8_t)((uint16_t)v>>8);}
+static void descriptor_tests(void){
+ uint16_t hid_len;const uint8_t *hid=switch_usb_hid_descriptor(&hid_len);
+ unsigned bits[256]={0},feature[256]={0},size=0,count=0,id=0;
+ for(unsigned i=0;i<hid_len;){
+   uint8_t prefix=hid[i++];unsigned n=prefix&3;if(n==3)n=4;
+   assert(i+n<=hid_len);unsigned value=0;for(unsigned j=0;j<n;j++)value|=(unsigned)hid[i+j]<<(j*8);i+=n;
+   unsigned type=(prefix>>2)&3,tag=prefix>>4;
+   if(type==1&&tag==7)size=value;
+   if(type==1&&tag==8)id=value;
+   if(type==1&&tag==9)count=value;
+   if(type==0&&tag==8)bits[id]+=size*count;
+   if(type==0&&tag==11)feature[id]+=size*count;
+ }
+ assert(bits[0x3f]==88&&bits[0x30]==504&&feature[0xf7]==504&&feature[0xfb]==1016);
+ for(unsigned mic=0;mic<2;mic++)for(unsigned high=0;high<2;high++)for(unsigned other=0;other<2;other++){
+   uint16_t len;const uint8_t *p=switch_usb_config_descriptor(mic!=0,high!=0,other!=0,&len);
+   assert((p[2]|p[3]<<8)==len&&p[1]==(other?7:2)&&p[4]==(mic?3:1));
+   unsigned epmask=0,interfaces=0,eps=0;
+   for(unsigned i=9;i<len;i+=p[i]){
+     assert(p[i]>=2&&i+p[i]<=len);
+     if(p[i+1]==4&&p[i+3]==0)interfaces++;
+     if(p[i+1]==0x21)assert((p[i+7]|p[i+8]<<8)==hid_len);
+     if(p[i+1]==5){
+       unsigned ep=p[i+2],index=ep&15;
+       /* Critical BL616 regression: IN and OUT cannot share a FIFO index. */
+       assert(!(epmask&(1u<<index)));epmask|=1u<<index;eps++;
+       assert(p[i+6]==(ep==SWITCH_USB_MIC_EP?(high?4:1):(high?7:8)));
+     }
+   }
+   assert(interfaces==(mic?3u:1u)&&eps==(mic?3u:2u));
+   assert(epmask==((1u<<4)|(1u<<1)|(mic?(1u<<2):0)));
+ }
+}
 static void motion_tests(void){
  struct switch_pro s;uint8_t mac[6]={2},r[64],d[63],cal[34]={0};
  switch_pro_init(&s,mac);sub(&s,0x40,1,r);
@@ -48,14 +82,17 @@ static void motion_tests(void){
  sub(&s,0x40,0,r);sub(&s,0x40,1,r);assert(s.gyro_range==3&&s.accel_range==0);
 }
 int main(void){
+ descriptor_tests();
  struct switch_pro s;uint8_t r[64],d[63]={0},mac[6]={2,3,4,5,6,7};
  switch_pro_init(&s,mac);switch_pro_report(&s,10,r);assert(r[0]==0x30&&ux(r+6)==2048&&uy(r+6)==2048);
+ switch_pro_simple_report(&s,r);assert(s.mode==0x3f&&r[0]==0x3f&&r[3]==8&&r[4]==0&&r[5]==128);
  uint8_t usb[2]={0x80,1};assert(switch_pro_output(&s,usb,2,0,r)==64);assert(r[0]==0x81&&r[1]==1&&r[3]==3&&r[4]==7&&r[9]==2);
  usb[1]=2;assert(switch_pro_output(&s,usb,2,0,r)==64&&r[1]==2);
  usb[1]=3;assert(switch_pro_output(&s,usb,2,0,r)==64&&r[1]==3);
  usb[1]=4;assert(switch_pro_output(&s,usb,2,0,r)==0&&s.usb_stream);
  sub(&s,2,0,r);assert(r[13]==0x82&&r[17]==3&&!memcmp(r+19,mac,6));
  sub(&s,3,0x30,r);assert(s.mode==0x30&&r[13]==0x80);sub(&s,3,0x31,r);assert(r[13]==0);
+ sub(&s,3,0x3f,r);assert(s.mode==0x3f&&r[13]==0x80);sub(&s,3,0x30,r);
  sub(&s,0x40,1,r);assert(s.imu);sub(&s,0x30,3,r);assert(s.player_leds==3);sub(&s,0x31,0,r);assert(r[13]==0xb0&&r[15]==3);
  memset(d,128,4);d[7]=8;
  const unsigned masks[4]={0x10,0x20,0x40,0x80},expected[4]={1,4,8,2};

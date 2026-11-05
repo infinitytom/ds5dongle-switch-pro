@@ -1,7 +1,7 @@
 // Byte offsets come from the packed config_body in src/config.h (version 2).
 export const fields = [
  ['haptics_gain','触觉强度',1,1,2,.05,'float'],
- ['controller_mode','USB 手柄模式',12,0,3,1,['DualSense','DualSense Edge','自动识别 DS / Edge','Switch Pro（实验）']],
+ ['controller_mode','USB 输出模式',12,0,4,1,['DualSense','DualSense Edge','自动识别 DS / Edge','Switch Pro','Switch Pro + USB 麦克风（实验）']],
  ['polling_rate_mode','DS 模式上报率',10,0,2,1,['250 Hz','500 Hz','实时']],
  ['inactive_time','空闲断开（分钟，0 为关闭）',8,0,60],
  ['speaker_volume','扬声器音量',5,0,127],['headset_volume','耳机音量',6,0,127],
@@ -41,4 +41,17 @@ export function featurePayload(view,id) {
 }
 export function supportsConfig(device) {
  return device.collections?.some(c=>c.featureReports?.some(r=>r.reportId===0xf7));
+}
+
+export function decodeStatus(bytes) {
+ if(bytes.length<13)throw Error('状态报告不完整');
+ const v=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength);
+ const result={rssi:v.getInt8(0),battery:bytes[11]===255?null:bytes[11],batteryState:bytes[12],extended:false};
+ if(bytes.length>=53&&bytes[13]===0xd5&&bytes[14]>=2){
+   Object.assign(result,{extended:true,activeMode:bytes[15],connected:!!bytes[16],reportMode:bytes[17],flags:bytes[18],
+     commands:v.getUint32(19,true),reports:v.getUint32(23,true),micFrames:v.getUint32(27,true),
+     input:[...bytes.slice(31,41)],micPeak:v.getUint16(41,true),inputAge:v.getUint32(43,true),
+     replies:v.getUint32(47,true),capabilities:bytes[51],saveStatus:bytes[52]});
+ }
+ return result;
 }

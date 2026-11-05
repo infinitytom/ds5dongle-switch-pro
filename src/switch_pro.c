@@ -33,7 +33,7 @@ void switch_pro_init(struct switch_pro *s, const uint8_t mac[6])
     memset(s, 0, sizeof(*s));
     memcpy(s->mac, mac, 6);
     switch_pro_disconnect(s);
-    s->mode = 0x30;
+    s->mode = 0x3f;
     s->gyro_range = 3;
 }
 void switch_pro_input(struct switch_pro *s, const uint8_t ds[63]) { memcpy(s->ds, ds, 63); }
@@ -54,6 +54,25 @@ void switch_pro_calibration(struct switch_pro *s, const uint8_t *data, unsigned 
         if (scale > .25f && scale < .75f) {
             s->bias[3+i] = (plus + minus) / 2.0f; s->scale[3+i] = scale;
         }
+    }
+}
+
+void switch_pro_simple_report(const struct switch_pro *s, uint8_t out[64])
+{
+    const uint8_t *d = s->ds;
+    memset(out, 0, 64); out[0] = 0x3f;
+    /* Simple-mode button order consumed by SDL and generic HID drivers:
+     * B,A,Y,X,L,R,ZL,ZR; minus,plus,L3,R3,home,capture. */
+    out[1] = ((d[7] >> 5) & 1) | ((d[7] >> 5) & 2) |
+             ((d[7] >> 2) & 4) | ((d[7] >> 4) & 8) |
+             ((d[8] & 1) << 4) | ((d[8] & 2) << 4) |
+             ((d[8] & 4) << 4) | ((d[8] & 8) << 4);
+    out[2] = ((d[8] >> 4) & 15) | ((d[9] & 3) << 4);
+    out[3] = (d[7] & 15) <= 7 ? d[7] & 15 : 8;
+    for (unsigned i = 0; i < 4; ++i) {
+        unsigned x = d[i];
+        unsigned v = x <= 128 ? x * 256 : 32768 + (x-128)*32767/127;
+        out[4+i*2] = (uint8_t)v; out[5+i*2] = (uint8_t)(v >> 8);
     }
 }
 
@@ -163,7 +182,7 @@ unsigned switch_pro_output(struct switch_pro *s, const uint8_t *p, unsigned len,
             reply[2] = 0; reply[3] = 3;
             for (unsigned i = 0; i < 6; ++i) reply[4+i] = s->mac[5-i];
         } else if (p[1] == 4) { s->usb_stream = true; return 0; }
-        else if (p[1] == 5) { s->usb_stream = false; return 0; }
+        else if (p[1] == 5) { s->usb_stream = false; s->mode = 0x3f; return 0; }
         else if (p[1] != 2 && p[1] != 3) return 0;
         return 64;
     }
@@ -179,7 +198,7 @@ unsigned switch_pro_output(struct switch_pro *s, const uint8_t *p, unsigned len,
         reply[17] = 3; reply[18] = 2;
         memcpy(reply + 19, s->mac, 6); reply[25] = 1; reply[26] = 1; break;
     case 0x03:
-        if (len < 12 || p[11] != 0x30) reply[13] = 0;
+        if (len < 12 || (p[11] != 0x30 && p[11] != 0x3f)) reply[13] = 0;
         else s->mode = p[11];
         break;
     case 0x04: reply[13] = 0x83; break;

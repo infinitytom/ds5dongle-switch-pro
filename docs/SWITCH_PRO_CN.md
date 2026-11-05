@@ -6,8 +6,8 @@
 
 1. 双击根目录 `start-config.cmd`，或执行 `powershell -ExecutionPolicy Bypass -File .\start-config.ps1` / `C:\Python313\python.exe web/serve.py`。
 2. 用桌面 Chrome / Edge 打开 <http://localhost:8765>，通过 USB 接上接收器，点击「连接接收器」。浏览器中选择带接收器配置接口的设备。
-3. 已有开源固件可以读取和修改 DS/Edge 设置。切换到 Switch Pro 需要先刷入这个分支编译的、版本号含 `Pro-dev1` 的固件；页面会阻止向旧固件写入模式 3。
-4. 修改模式后点击「保存并重启」，重新授权枚举后的设备。Pro 模式也保留专用配置 Feature Reports，因此能再切回 DS 模式。
+3. 已有开源固件可以读取和修改 DS/Edge 设置。Switch Pro 需要 **alpha.3 固件（版本字符串含 Pro-dev1 r3）**；旧版本有已复现的 USB 收发端点冲突，控制台会提示升级。
+4. 修改模式后点击「保存并应用」。页面等待闪存写入确认，再自动重启并尝试连接新身份。首次使用该 USB 身份时点击「授权新模式接收器」。USB 身份改变需要重新枚举，无需另外手动按重启。Pro 模式保留配置 Feature Reports，可以切回 DS 模式。
 
 页面无 CDN、在线字体、遥测和服务器 API，网络断开仍可使用。Python 服务器只监听 127.0.0.1。重启电脑后重新运行脚本即可。不要直接双击 HTML（ES modules 与 WebHID 需要本地 HTTP 安全上下文）。如果已有服务器占用 8765，直接打开上述地址。
 
@@ -17,15 +17,16 @@
 
 | 项目 | 实现 |
 |---|---|
-| 模式 | `controller_mode=3`，沿用 version 2 的 29 字节配置布局 |
-| USB 身份 | 实验性模拟 057e:2009 Pro Controller；单个 HID 接口，IN 0x81 / OUT 0x01，64 字节报告 |
+| 模式 | `controller_mode=3` 为 Pro，`4` 为 Pro+USB 麦克风；沿用 version 2 的 29 字节配置布局 |
+| USB 身份 | 模拟 057e:2009；HID IN 0x84 / OUT 0x01，避免 BL616 同编号双向端点共用 FIFO |
 | 握手 | 0x80 的 identify、handshake、baudrate、USB timeout 命令 |
-| 输入 | 0x30，8 ms 周期；按键、12 位双摇杆、电量、三组 IMU 数据 |
+| 输入 | 默认标准 0x3F（浏览器/普通 HID），主机可切到完整 0x30；8 ms 周期 |
 | 主机命令 | 0x01 子命令，0x21 ACK；只读 SPI 工厂校准、输入模式、IMU、振动和玩家灯状态 |
 | HD 震动 | 0x01 / 0x10 内左右两组 4 字节传统频率/振幅编码；分别解码高低频，连续相位合成 3 kHz 立体声 int8 波形 |
 | 触觉输出 | 使用上游已存在的蓝牙 0x39 / 0xD2 双帧通道，每包 64 对采样，约 21.33 ms；Pro 模式不需要主机 USB Audio 流 |
 | 停止保护 | 禁用振动、USB 复位/挂起、或 250 ms 没有新振动参数时输出静音 |
 | 本地配置 | F6 写配置/保存/重启，F7 读配置，F8 版本，F9 状态，FB 两组按键映射 |
+| Pro 麦克风 | 模式 4 增加 UAC1 接口 1/2，ISO IN 0x82，2ch/16bit/48kHz，支持主静音；有线复合设备兼容性待测 |
 
 默认按实体位置映射：○→A，×→B，△→X，□→Y；L1/R1→L/R，L2/R2→ZL/ZR，Create→−，Options→+，PS→HOME，触摸板按下→Capture。扳机使用 DualSense 的数字按下状态，转换后不保留模拟行程。已有 remap 表先应用，再转换为 Switch 布局。
 
@@ -37,7 +38,9 @@ Switch 1 / 2：通过底座 USB 连接接收器，在主机设置中启用「Pro
 
 电脑模拟器：选择原生 Switch Pro / SDL HIDAPI 输入后端。模拟器必须输出完整 HD 震动编码，才能保留频率变化；只输出普通强弱震动的后端无法还原原始 HD 细节。Steam Input 等中间层可能改变输出路径。不要同时让多个程序抢占接收器。
 
-目前不提供 NFC / amiibo、红外、无线连接主机、主机唤醒、Switch 2 Pro 的 C/GL/GR 按键、HD Rumble 2。Pro 模式不暴露原来的 USB 声卡和键鼠接口，原有音频、麦克风、自适应扳机和键鼠映射功能请切回 DS/Edge 模式使用。震动是波形转译，DualSense 执行器与 Nintendo 执行器的物理差异需要后续调校，不能保证手感一致。
+目前不提供 NFC / amiibo、红外、无线连接主机、主机唤醒、Switch 2 Pro 的 C/GL/GR 按键、HD Rumble 2。纯 Pro 模式没有音频接口；模式 4 提供 USB 麦克风输入，不提供音频播放。原有扬声器、耳机输出、自适应扳机和键鼠功能请切回 DS/Edge 模式。震动是波形转译，执行器物理差异仍需调校。
+
+控制台「音频与麦克风」可授权并选择系统音频输入，在本机观察电平，不录音或上传。请选择带 DualSense / Pro Controller 名称的输入设备，避免测到电脑内置麦克风。Switch 2 Pro 提供 3.5mm CTIA 耳麦接口，Switch 2 也支持外接 USB 麦克风；这里走独立 UAC1 USB 输入路线，不能据此保证主机接受本接收器的复合接口。任天堂说明：<https://support.nintendo.com/jp/switch2/accessory/controller/pro-controller/index.html>、<https://en-americas-support.nintendo.com/app/answers/detail/a_id/68398/>。
 
 ## 构建
 

@@ -39,7 +39,7 @@ void config_validate(void)
         b->polling_rate_mode = 2;
     if (b->audio_buffer_length < 16 || b->audio_buffer_length > 128)
         b->audio_buffer_length = 64;
-    if (b->controller_mode > 3)
+    if (b->controller_mode > 4)
         b->controller_mode = 2;
     if (b->enable_usb_sn > 1)
         b->enable_usb_sn = 0;

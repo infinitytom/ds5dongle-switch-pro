@@ -36,6 +36,8 @@
  */
 void usb_audio_early_init(void);
 void usb_audio_register(uint8_t busid);
+/* Register AC+AS mic after the Pro HID interface (interfaces 1 and 2). */
+void usb_audio_register_pro_mic(uint8_t busid);
 
 /**
  * Get the audio portion of the config descriptor.
@@ -86,5 +88,7 @@ bool usb_audio_mic_is_active(void);
  * Called together with usb_audio_stop() on disconnect.
  */
 void usb_audio_mic_stop(void);
+/* Drop stale BT audio without changing the USB host's selected alt setting. */
+void usb_audio_mic_clear(void);
 
 #endif /* DS5_USB_AUDIO_H */

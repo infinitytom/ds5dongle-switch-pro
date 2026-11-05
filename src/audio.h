@@ -53,6 +53,8 @@ void audio_set_mic_active(bool active);
  * Check if mic streaming is active.
  */
 bool audio_mic_active(void);
+uint32_t audio_mic_frame_count(void);
+uint16_t audio_mic_peak(void);
 
 /**
  * Mic decode task entry point (FreeRTOS).

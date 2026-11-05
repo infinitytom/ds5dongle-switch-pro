@@ -56,6 +56,8 @@ static uint8_t  packet_counter;
 static volatile bool plug_headset;
 static volatile bool mic_enabled;   /* host opened mic interface AND config allows */
 static volatile bool mic_status_pending;  /* deferred: send 0x32 to controller */
+static volatile uint32_t mic_decoded_frames;
+static volatile uint16_t mic_level_peak;
 static int encoder_force_channels;
 
 static QueueHandle_t mic_queue;
@@ -429,6 +431,8 @@ int audio_init(void)
     mic_enabled = false;
     mic_status_pending = false;
     mic_first_frame = false;
+    mic_level_peak = 0;
+    mic_decoded_frames = 0;
     memset(opus_slots, 0, sizeof(opus_slots));
     memset(haptic_slots, 0, sizeof(haptic_slots));
 
@@ -488,6 +492,12 @@ void audio_task(void *arg)
     uint64_t pro_next_us = 0;
 
     for (;;) {
+        /* Pro mode bypasses the speaker pipeline but still must send the
+         * controller's microphone start/stop command from task context. */
+        if (mic_status_pending && bt_hid_host_get_state() == BT_HID_STATE_CONNECTED) {
+            mic_status_pending = false;
+            send_mic_status();
+        }
         if (usb_gamepad_switch_mode()) {
             uint64_t now = bflb_mtimer_get_time_us();
             if (bt_hid_host_get_state() == BT_HID_STATE_CONNECTED && now >= pro_next_us) {
@@ -612,6 +622,8 @@ void audio_reset(void)
     mic_enabled = false;
     mic_status_pending = false;
     mic_first_frame = false;
+    mic_level_peak = 0;
+    mic_decoded_frames = 0;
     memset(opus_slots, 0, sizeof(opus_slots));
     memset(haptic_slots, 0, sizeof(haptic_slots));
     if (encoding_in_progress) {
@@ -623,7 +635,7 @@ void audio_reset(void)
         opus_decoder_ctl(decoder, OPUS_RESET_STATE);
     if (mic_queue)
         xQueueReset(mic_queue);
-    usb_audio_mic_stop();
+    usb_audio_mic_clear();
 }
 
 void audio_reset_encoder(void)
@@ -662,6 +674,9 @@ bool audio_mic_active(void)
     return mic_enabled;
 }
 
+uint32_t audio_mic_frame_count(void) { return mic_decoded_frames; }
+uint16_t audio_mic_peak(void) { return mic_level_peak; }
+
 /* ---- Mic decode task: runs independently at lower priority than audio_task ----
  * Blocks on mic_queue so it doesn't burn CPU when mic is inactive.
  * Decodes one Opus frame per wakeup → writes to USB mic ring buffer.
@@ -696,6 +711,13 @@ void audio_mic_task(void *arg)
             mic_first_frame = true;
             LOG_INF("[AUDIO] First mic frame decoded (%d samples)\n", decoded);
         }
+        uint16_t peak = 0;
+        for (int i = 0; i < decoded; ++i) {
+            int v = mic_mono[i]; if (v < 0) v = -v;
+            if (v > peak) peak = (uint16_t)v;
+        }
+        mic_level_peak = peak;
+        ++mic_decoded_frames;
 
         /* Pack mono → stereo via uint32: one 32-bit write per sample (LE). */
         uint32_t *out32 = (uint32_t *)mic_stereo;

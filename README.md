@@ -16,28 +16,31 @@
 
 本地配置需要 **Python 3 + 桌面 Chrome / Edge**。解压配置工具后双击 `start-config.cmd`，点击「连接接收器」，选择 USB 接收器。Linux/macOS 可执行 `python3 web/serve.py`。
 
-启用 Switch Pro 需先刷入本分支固件，再在配置页选择 **Switch Pro（实验）→ 保存并重启**。主机端需开启「Pro 手柄的有线通信」，通过底座 USB 接入。Pro 模式保留本地配置接口，可以切回 DualSense 模式。
+启用 Switch Pro 需刷入 **alpha.3 或更新固件**，再在配置页选择 **Switch Pro → 保存并应用**。页面等待闪存确认后会自动重启接收器、尝试重新连接；浏览器首次见到新 USB 身份时，按提示授权。主机端需开启「Pro 手柄的有线通信」，通过底座 USB 接入。Pro 模式保留本地配置接口，可以切回 DualSense 模式。
 
 详细步骤：[中文使用说明](docs/SWITCH_PRO_CN.md) · [验证记录](docs/VALIDATION.md) · [上游说明](README_UPSTREAM.md)
 
-`v0.1.0-alpha.2` 修复 Windows PowerShell 启动脚本的编码错误，并支持重复启动时复用已有本地服务。已刷入 alpha.1 固件的用户只需更新离线配置包，**无需重刷固件**。
+`v0.1.0-alpha.2` 是启动器编码补丁；`alpha.3` 包含 USB 固件修复，需更新配置包并刷入新固件。
+
+**alpha.3 需要更新固件**：已在旧固件上复现 SDL 打开时报 `Couldn't setup USB mode`，定位到 BL616 SDK 对同编号 IN/OUT 端点使用同一 FIFO。新版使用 **IN 0x84 / OUT 0x01**，并增加标准 0x3F 输入报告、可选 USB 麦克风、实时诊断和重新设计的控制台。新固件的主机识别与音频仍需刷入后复测，不能把旧版的测试结果当作新版硬件验收。
 
 ## 当前功能
 
 | 功能 | 实现与限制 |
 |---|---|
-| USB 模式 | DualSense / Edge / 自动，以及实验性 Switch Pro（057e:2009） |
+| USB 模式 | DualSense / Edge / 自动、Switch Pro、Pro + USB 麦克风（057e:2009） |
 | 按键与摇杆 | Switch Pro 12 位摇杆、方向键、HOME、Capture、电量；两组按键映射 |
 | 体感 | 双方 IMU 单位与坐标系转换、DualSense 工厂校准、Pro 量程设置；每报告重复当前样本三次 |
 | HD 震动 | 左右高低频参数解码 → 连续相位 3 kHz 波形 → 上游 DualSense 蓝牙触觉通道 |
-| 本地配置 | WebHID 直连、读取/保存/重启、配置导入导出；所有页面资源随包提供 |
+| 本地配置 | 控制台、实时按键/摇杆、电量/信号、自动保存重连、映射、音频电平测试和诊断导出 |
+| 麦克风 | Pro + USB 麦克风模式提供独立 UAC1 2ch/48kHz 输入，单声道蓝牙麦克风复制到双声道；主机兼容性待测 |
 | 停止处理 | 震动超时、禁用、USB 挂起/复位与手柄断线处理 |
 
 按实体位置映射：**○→A、×→B、△→X、□→Y**；Create→−、Options→+、PS→HOME、触摸板按下→Capture。L2/R2 转为数字 ZL/ZR，不保留模拟行程。
 
 当前只支持传统 Switch Pro 的 4 字节/通道震动编码。模拟器必须输出完整 HD 震动参数；普通强弱震动后端无法恢复原始 HD 细节。DualSense 与 Nintendo 执行器的物理差异仍需调校。
 
-不提供 NFC/amiibo、红外、无线连接 Switch、主机唤醒、Switch 2 Pro 的 C/GL/GR 按键或 HD Rumble 2。Pro 模式不暴露 USB 声卡和键鼠接口；需要原有音频、麦克风、自适应扳机和键鼠功能时请使用 DS/Edge 模式。
+不提供 NFC/amiibo、红外、无线连接 Switch、主机唤醒、Switch 2 Pro 的 C/GL/GR 按键或 HD Rumble 2。纯 Pro 不暴露音频接口；Pro + USB 麦克风模式只增加音频输入。需要扬声器、耳机输出、自适应扳机和键鼠功能时请使用 DS/Edge 模式。独立 USB 麦克风的 Switch 2 兼容性尚未验证，它不是对 Switch 2 Pro 私有音频传输的实现。
 
 ## 构建和测试
 
@@ -50,7 +53,7 @@ npm test
 
 # 协议核心测试（Linux/macOS，需 C 编译器）
 mkdir -p build-tests
-cc -std=c11 -Wall -Wextra -Werror -Isrc tests/switch_pro_test.c src/switch_pro.c -lm -o build-tests/switch-pro-test
+cc -std=c11 -Wall -Wextra -Werror -Isrc tests/switch_pro_test.c src/switch_pro.c src/switch_usb.c -lm -o build-tests/switch-pro-test
 ./build-tests/switch-pro-test
 ```
 

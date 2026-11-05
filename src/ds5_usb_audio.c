@@ -216,6 +216,8 @@ static int16_t mic_ring[MIC_RING_SIZE * USB_AUDIO_MIC_CHANNELS];
 static volatile uint32_t mic_ring_wr = 0;
 static volatile uint32_t mic_ring_rd = 0;
 static volatile bool     mic_active  = false;
+static volatile bool     mic_usb_muted = false;
+static bool pro_mic_only;
 
 static uint8_t USB_NOCACHE_RAM_SECTION iso_mic_tx_buf[USB_AUDIO_MIC_MPS];
 
@@ -283,6 +285,7 @@ static void mic_send_next(uint8_t busid)
         tx[i * 2 + 1] = 0;
     }
     mic_ring_rd = (rd + to_send) % MIC_RING_SIZE;
+    if (mic_usb_muted) memset(iso_mic_tx_buf, 0, samples_per_pkt * 2 * sizeof(int16_t));
 
     int ret = usbd_ep_start_write(busid, USB_AUDIO_MIC_EP_IN,
                                   iso_mic_tx_buf, samples_per_pkt * 2 * sizeof(int16_t));
@@ -301,7 +304,7 @@ static void audio_mic_ep_in_handler(uint8_t busid, uint8_t ep, uint32_t nbytes)
 
 void usbd_audio_open(uint8_t busid, uint8_t intf)
 {
-    if (intf == USB_AUDIO_INTF_STREAM) {
+    if (!pro_mic_only && intf == USB_AUDIO_INTF_STREAM) {
         LOG_INF("[AUDIO] Speaker stream opened\n");
         stream_active = true;
         pcm_write_pos = 0;
@@ -323,7 +326,7 @@ void usbd_audio_open(uint8_t busid, uint8_t intf)
 
 void usbd_audio_close(uint8_t busid, uint8_t intf)
 {
-    if (intf == USB_AUDIO_INTF_STREAM) {
+    if (!pro_mic_only && intf == USB_AUDIO_INTF_STREAM) {
         usbd_ep_close(busid, USB_AUDIO_EP_OUT);
         LOG_INF("[AUDIO] Speaker stream closed\n");
         stream_active = false;
@@ -357,7 +360,7 @@ void usbd_audio_set_mute(uint8_t busid, uint8_t ep, uint8_t ch, bool mute)
 {
     (void)busid; (void)ch;
     if (ep == USB_AUDIO_MIC_EP_IN) {
-        LOG_INF("[AUDIO] Mic mute %d (ignored)\n", mute);
+        mic_usb_muted = mute;
         return;
     }
     state_mgr_set_mute(mute);
@@ -370,6 +373,12 @@ uint32_t usbd_audio_get_sampling_freq(uint8_t busid, uint8_t ep)
     return USB_AUDIO_SAMPLE_RATE;
 }
 
+bool usbd_audio_get_mute(uint8_t busid, uint8_t ep, uint8_t ch)
+{
+    (void)busid; (void)ch;
+    return ep == USB_AUDIO_MIC_EP_IN ? mic_usb_muted : false;
+}
+
 /* ---- Public API ---- */
 
 void usb_audio_early_init(void)
@@ -380,6 +389,7 @@ void usb_audio_early_init(void)
 
 void usb_audio_register(uint8_t busid)
 {
+    pro_mic_only = false;
     usb_audio_early_init();
 
     usbd_add_interface(busid, usbd_audio_init_intf(
@@ -401,6 +411,21 @@ void usb_audio_register(uint8_t busid)
     usbd_add_endpoint(busid, &audio_mic_ep);
 
     LOG_INF("[AUDIO] UAC1 interfaces registered (spk+mic)\n");
+}
+
+void usb_audio_register_pro_mic(uint8_t busid)
+{
+    usb_audio_early_init();
+    pro_mic_only = true;
+    mic_usb_muted = false;
+    /* Call after Pro HID registration: the AC/AS numbers become 1 and 2. */
+    usbd_add_interface(busid, usbd_audio_init_intf(busid, &audio_intf_ctrl,
+        0x0100, &entity_table[1], 1));
+    usbd_add_interface(busid, usbd_audio_init_intf(busid, &audio_intf_mic,
+        0x0100, &entity_table[1], 1));
+    audio_mic_ep.ep_addr = USB_AUDIO_MIC_EP_IN;
+    audio_mic_ep.ep_cb = audio_mic_ep_in_handler;
+    usbd_add_endpoint(busid, &audio_mic_ep);
 }
 
 const uint8_t *usb_audio_get_desc(uint16_t *len)
@@ -472,4 +497,9 @@ void usb_audio_mic_stop(void)
     mic_active  = false;
     mic_ring_wr = 0;
     mic_ring_rd = 0;
+}
+
+void usb_audio_mic_clear(void)
+{
+    mic_ring_rd = mic_ring_wr;
 }

@@ -1,0 +1,258 @@
+import {fields,decode,encode,featurePayload,supportsConfig,decodeStatus} from './config.js';
+
+const $=id=>document.getElementById(id);
+const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const labels=['DualSense','DualSense Edge','自动 / DS・Edge','Switch Pro','Pro + USB 麦克风'];
+const names=['□','×','○','△','L1','R1','L2','R2','Create','Options','L3','R3','PS','触摸板按下','静音','↑','↓','←','→','左区触摸','左区↑','左区↓','左区←','左区→','左区按下','右区触摸','右区↑','右区↓','右区←','右区→','右区按下'];
+const audioFields=new Set(['speaker_volume','headset_volume','speaker_gain','disable_mic','disable_speaker','lock_volume','audio_haptic']);
+const quickFields=new Set(['haptics_gain','polling_rate_mode','inactive_time','disable_led']);
+let device=null,original=null,firmware='',diagnostic=null,remap=null,busy=false,polling=false,failures=0;
+let pendingMode=null,reconnectUntil=0,reconnectTimer=null,readGeneration=0;
+let audioStream=null,audioContext=null,audioAnimation=0;
+const events=[];
+const controls=['refresh','save','reboot','export','import','readmap','profile'];
+
+function log(message){
+  events.unshift({time:new Date().toLocaleTimeString('zh-CN',{hour12:false}),message});
+  events.splice(30);$('event-log').replaceChildren();
+  for(const entry of events){const li=document.createElement('li'),time=document.createElement('time');time.textContent=entry.time;li.append(time,document.createTextNode(entry.message));$('event-log').append(li);}
+}
+function announce(title,message,kind='info'){
+  $('notice-title').textContent=title;$('status').textContent=message;$('notice').className=`notice ${kind}`;
+}
+function setView(view){
+  document.querySelectorAll('[data-panel]').forEach(p=>p.classList.toggle('active',p.dataset.panel===view));
+  document.querySelectorAll('[data-view]').forEach(b=>{b.classList.toggle('active',b.dataset.view===view);b.setAttribute('aria-current',b.dataset.view===view?'page':'false');});
+  const title={overview:'设备概览',mapping:'按键映射',audio:'音频与麦克风',advanced:'高级设置',diagnostics:'连接诊断',support:'支持开发'}[view];
+  $('view-name').textContent=title;$('page-title').textContent=view==='overview'?'接收器控制台':title;
+  if(view!=='audio')stopAudio();
+}
+document.querySelectorAll('[data-view]').forEach(b=>b.addEventListener('click',()=>setView(b.dataset.view)));
+
+for(const [key,label,,min,max,step=1,type] of fields){
+  const row=document.createElement('label');row.append(document.createTextNode(label));
+  const input=document.createElement(Array.isArray(type)?'select':'input');input.id=key;
+  if(Array.isArray(type))type.forEach((text,i)=>input.add(new Option(text,String(i))));
+  else{input.type=type==='bool'?'checkbox':'number';input.min=min;input.max=max;input.step=step;input.required=type!=='bool';}
+  input.addEventListener('change',updateSummary);input.addEventListener('input',updateSummary);row.append(input);
+  const target=key==='controller_mode'?'fields':quickFields.has(key)?'quick-fields':audioFields.has(key)?'audio-fields':'advanced-fields';
+  $(target).append(row);
+}
+$('controller_mode').value='2';
+document.querySelectorAll('[data-mode]').forEach(b=>b.addEventListener('click',()=>{$('controller_mode').value=b.dataset.mode;updateSummary();}));
+
+function formValues(){return Object.fromEntries(fields.map(([key,,,,,,type])=>[key,type==='bool'?Number($(key).checked):Number($(key).value)]));}
+function showConfig(bytes){const values=decode(bytes);for(const [key,,,,,,type] of fields){if(type==='bool')$(key).checked=!!values[key];else $(key).value=type==='float'?Number(values[key].toFixed(2)):values[key];}updateSummary();}
+function activeMode(){
+  if(diagnostic?.extended)return diagnostic.activeMode;
+  if(!original)return null;
+  const saved=original[12],pro=device?.vendorId===0x057e;
+  return (saved>=3)===pro?saved:pro?3:0;
+}
+function mustReconnect(next){
+  if(next[12]!==activeMode())return true;
+  if(!original)return false;
+  return [13,14,17,21].some(i=>next[i]!==original[i])||([2,3].includes(next[25])!==[2,3].includes(original[25]));
+}
+function updateSummary(){
+  const mode=Number($('controller_mode').value);
+  document.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('selected',Number(b.dataset.mode)===mode||(Number(b.dataset.mode)===2&&mode<=2)));
+  $('mode-note').textContent=mode===4?'增加独立 USB 麦克风接口。先在电脑选择此输入设备测试，Switch 2 的复合设备兼容性待实测。':mode===3?'一代 Switch Pro 协议。主机开启有线通信；浏览器普通手柄输入使用标准 0x3F，模拟器可切为完整报告。':'保留 DualSense 原生音频、麦克风、自适应扳机和键鼠功能。';
+  if(!original){$('apply-summary').textContent=pendingMode!==null?'正在重新连接设备':'等待连接设备';$('apply-detail').textContent=pendingMode!==null?'需要时点击右上角授权新模式接收器':'配置由接收器保存到闪存';$('save-indicator').className='save-indicator';return;}
+  const before=decode(original),values=formValues();
+  const dirty=fields.filter(([key])=>Math.abs(Number(before[key])-Number(values[key]))>.00001).length;
+  let reconnect=false;try{reconnect=mustReconnect(encode(original,values));}catch{/* Form validation reports errors on save. */}
+  $('apply-summary').textContent=dirty?`${dirty} 项设置待保存`:reconnect?'模式已保存，等待应用':'设置已与接收器同步';
+  $('apply-detail').textContent=reconnect?`应用后自动保存并重启接收器，等待以 ${labels[mode]} 重新枚举`:'保存后回读配置；新版固件会确认闪存写入结果';
+  $('save-indicator').className=`save-indicator ${dirty||reconnect?'dirty':'saved'}`;
+}
+function enableControls(){
+  const ready=!!device?.opened&&!!original&&!busy;
+  controls.forEach(id=>$(id).disabled=!ready);
+  document.querySelectorAll('[data-config]').forEach(f=>f.disabled=!ready);
+  document.querySelectorAll('[data-mode]').forEach(b=>b.disabled=!ready);
+  $('connect').disabled=busy;
+  $('connect').textContent=pendingMode!==null?'授权新模式接收器':device?.opened&&original?'切换接收器':'连接接收器';
+  $('mapping').disabled=!ready||!remap;$('savemap').disabled=$('activemap').disabled=!ready||!remap;
+  const connected=!!original&&!!device?.opened;
+  $('connection-pill').className=`connection-pill ${connected?'connected':''}`;
+  $('connection-pill').replaceChildren();const dot=document.createElement('i');$('connection-pill').append(dot,document.createTextNode(connected?'USB 已连接':pendingMode!==null?'等待重新枚举':'未连接'));
+  document.querySelector('.app-shell').classList.toggle('reconnecting',pendingMode!==null);
+  updateSummary();
+}
+async function run(fn){
+  if(busy)return;busy=true;enableControls();
+  try{while(polling)await delay(10);await fn();}
+  catch(error){announce('操作未完成',error.message||String(error),'error');log(error.message||String(error));}
+  finally{busy=false;enableControls();}
+}
+async function receive(id){return featurePayload(await device.receiveFeatureReport(id),id);}
+async function send(id,bytes){const size=id===0xfb?127:63;if(bytes.length>size)throw Error('报告过长');const packet=new Uint8Array(size);packet.set(bytes);await device.sendFeatureReport(id,packet);}
+function clearReadState(){original=null;remap=null;diagnostic=null;$('mapping').replaceChildren();$('map-empty').hidden=false;}
+
+function updateInput(raw){
+  if(!raw||raw.length<10){$('live-badge').textContent='旧固件无实时诊断';return;}
+  const hat=raw[7]&15;
+  const pressed=[!!(raw[7]&16),!!(raw[7]&32),!!(raw[7]&64),!!(raw[7]&128),...Array.from({length:8},(_,i)=>!!(raw[8]&(1<<i))),!!(raw[9]&1),!!(raw[9]&2),!!(raw[9]&4),[0,1,7].includes(hat),[3,4,5].includes(hat),[5,6,7].includes(hat),[1,2,3].includes(hat)];
+  document.querySelectorAll('[data-button]').forEach(b=>b.classList.toggle('active',pressed[Number(b.dataset.button)]));
+  $('stick-left').setAttribute('cx',String(184+(raw[0]-128)*.105));$('stick-left').setAttribute('cy',String(183+(raw[1]-128)*.105));
+  $('stick-right').setAttribute('cx',String(376+(raw[2]-128)*.105));$('stick-right').setAttribute('cy',String(183+(raw[3]-128)*.105));
+  const axis=x=>((x-128)/128).toFixed(2);
+  $('left-axis').textContent=`X ${axis(raw[0])} · Y ${axis(raw[1])}`;$('right-axis').textContent=`X ${axis(raw[2])} · Y ${axis(raw[3])}`;
+  $('trigger-values').textContent=`${Math.round(raw[4]/255*100)}% / ${Math.round(raw[5]/255*100)}%`;
+}
+function renderStatus(s){
+  diagnostic=s;const mode=activeMode();
+  $('active-mode').textContent=mode===null?'尚未连接':labels[mode]||'未知模式';
+  $('mode-detail').textContent=s.extended?(s.reportMode===0x3f?'0x3F · 浏览器标准输入':s.reportMode===0x30?'0x30 · 完整 Pro 输入':'原生 DualSense 输入'):'旧固件 · 状态信息有限';
+  const connected=s.extended?s.connected:s.battery!==null;
+  $('bt-state').textContent=connected?'已连接':'等待配对';
+  $('input-age').textContent=s.extended&&connected?`最近输入 ${s.inputAge} ms 前`:'手柄按住 PS + Create 进入配对';
+  $('battery').replaceChildren(document.createTextNode(s.battery===null?'—':String(s.battery)));const percent=document.createElement('em');percent.textContent='%';$('battery').append(percent);
+  $('battery-detail').textContent=s.battery===null?'等待手柄电量':s.batteryState===1?'正在充电':s.batteryState===2?'充电完成':'电池供电';
+  $('rssi').replaceChildren(document.createTextNode(connected?String(s.rssi):'—'));const dbm=document.createElement('em');dbm.textContent='dBm';$('rssi').append(dbm);
+  $('signal-detail').textContent=!connected?'等待蓝牙连接':s.rssi>-60?'信号良好':s.rssi>-80?'信号一般':'信号较弱';
+  $('live-badge').textContent=s.extended?(connected?'输入监测中':'等待蓝牙输入'):'升级固件启用实时监测';$('live-badge').className=`mini-badge ${s.extended&&connected?'live':''}`;
+  if(s.extended)updateInput(s.input);
+  $('report-value').textContent=s.extended?`0x${s.reportMode.toString(16).toUpperCase()}`:'旧固件未提供';
+  $('commands-value').textContent=s.extended?String(s.commands):'—';$('reports-value').textContent=s.extended?String(s.reports):'—';$('replies-value').textContent=s.extended?String(s.replies):'—';
+  $('save-value').textContent=s.extended?['未确认 / 待保存','正在写入闪存','已写入闪存','闪存保存失败'][s.saveStatus]||'未知':'旧固件无回执';
+  $('mic-state').textContent=s.extended&&s.flags&2?'主机已打开音频输入':mode===4?'已启用 USB 麦克风接口':'未打开麦克风流';
+  $('mic-frames').textContent=s.extended?String(s.micFrames):'—';$('mic-device-level').textContent=s.extended?`${Math.round((s.flags&4?s.micPeak:0)/32768*100)}%`:'—';
+}
+async function read(){
+  const generation=++readGeneration;clearReadState();
+  const cfg=await receive(0xf7);decode(cfg);
+  const version=new TextDecoder().decode(await receive(0xf8)).replace(/\0.*$/s,'');
+  const state=decodeStatus(await receive(0xf9));
+  if(generation!==readGeneration)throw Error('读取期间设备已经断开，请重新连接。');
+  original=cfg;firmware=version;renderStatus(state);showConfig(cfg);failures=0;
+  $('device').textContent=`${device.productName||'DS5 接收器'} · ${version}`;
+  $('firmware-value').textContent=version;
+  const hex=x=>Number(x||0).toString(16).padStart(4,'0').toUpperCase();
+  $('usb-value').textContent=`${hex(device.vendorId)} : ${hex(device.productId)}`;
+  $('hid-value').textContent=supportsConfig(device)?'F6 / F7 / F8 / F9 可访问':'未找到配置报告';
+  if(!state.extended||!(state.capabilities&1))announce('接收器已连接 · 建议升级固件','当前固件缺少 Pro 收发端点修复和实时诊断。请更新到 alpha.3 固件后使用 Switch Pro。','warning');
+  else announce('接收器已连接',`当前模式：${labels[state.activeMode]}。设置保存后会自动判断是否需要重新枚举。`,'success');
+  log(`已连接 ${version} / ${labels[activeMode()]}`);
+}
+async function connectTo(selected){
+  clearReadState();
+  if(device?.opened&&device!==selected){try{await device.close();}catch{/* Previous enumeration is gone. */}}
+  device=selected;if(!device.opened)await device.open();await read();
+  const expected=pendingMode;pendingMode=null;clearTimeout(reconnectTimer);
+  if(expected!==null&&activeMode()!==expected)announce('设备重新连接，但模式与目标不同','请查看连接诊断并导出记录；本次没有继续写入配置。','warning');
+}
+$('connect').onclick=()=>run(async()=>{
+  if(!navigator.hid)throw Error('当前浏览器不支持 WebHID。请使用桌面 Chrome / Edge 打开本地配置页。');
+  const devices=await navigator.hid.requestDevice({filters:[{vendorId:0x054c,productId:0x0ce6},{vendorId:0x054c,productId:0x0df2},{vendorId:0x057e,productId:0x2009}]});
+  const selected=devices.find(supportsConfig);
+  if(!selected)throw Error('未选择配置接口。Pro 模式请选择带 F7 配置报告的接收器接口，原装直连手柄不提供此接口。');
+  await connectTo(selected);
+});
+$('refresh').onclick=()=>run(read);
+
+async function reconnectScan(){
+  if(pendingMode===null)return;
+  if(Date.now()>reconnectUntil){announce('等待新模式授权','若浏览器尚未授权此 USB 身份，请点击右上角「授权新模式接收器」。','warning');enableControls();return;}
+  if(!busy&&!polling&&navigator.hid?.getDevices){
+    const granted=await navigator.hid.getDevices().catch(()=>[]);
+    const selected=granted.find(d=>supportsConfig(d)&&(pendingMode>=3?d.vendorId===0x057e:d.vendorId===0x054c));
+    if(selected){await run(async()=>{await connectTo(selected);announce('模式已应用',`已重新连接：${labels[activeMode()]}。无需手动拔插接收器。`,'success');});if(pendingMode===null)return;}
+  }
+  reconnectTimer=setTimeout(reconnectScan,500);
+}
+async function save(forceReconnect=false){
+  const next=encode(original,formValues());
+  if(next[12]>=3&&(!diagnostic?.extended||!(diagnostic.capabilities&1)))throw Error('当前固件缺少 Pro USB 修复，请先更新到 alpha.3 固件。');
+  if(next[12]===4&&!(diagnostic.capabilities&4))throw Error('此固件未提供 Pro + USB 麦克风接口。');
+  const reconnect=forceReconnect||mustReconnect(next);
+  await send(0xf6,new Uint8Array([1,...next.slice(0,29)]));
+  const actual=await receive(0xf7);decode(actual);
+  if(next.slice(0,29).some((v,i)=>actual[i]!==v))throw Error('设备回读与写入不符，本次未发送闪存保存命令。');
+  await send(0xf6,new Uint8Array([2]));
+  if(diagnostic?.extended){
+    let saved=false;
+    for(let i=0;i<30;i++){await delay(60);const s=decodeStatus(await receive(0xf9));renderStatus(s);if(s.saveStatus===3)throw Error('接收器写入闪存失败，未重启。请导出诊断。');if(s.saveStatus===2){saved=true;break;}}
+    if(!saved)throw Error('等待闪存保存确认超时，未发送重启命令。');
+  }
+  original=actual;
+  if(!reconnect){announce('设置已保存',diagnostic?.extended?'闪存保存已确认。':'保存命令已发送；旧固件不提供写入回执。','success');log('设置保存完成');return;}
+  pendingMode=next[12];reconnectUntil=Date.now()+20000;
+  log(`设置已保存，切换至 ${labels[pendingMode]}，等待重新枚举`);
+  announce('设置已保存 · 正在应用模式','接收器会重启并重新枚举 USB。已授权的身份将自动连接；新身份需要在浏览器中授权。');
+  try{await send(0xf6,new Uint8Array([3]));}
+  catch(error){if(device?.opened){pendingMode=null;throw error;}}
+  clearReadState();reconnectTimer=setTimeout(reconnectScan,700);
+}
+$('settings').onsubmit=e=>{e.preventDefault();run(()=>save(false));};
+$('reboot').onclick=()=>{if($('settings').reportValidity())run(()=>save(true));};
+function download(name,data,type='application/json'){
+  const blob=new Blob([typeof data==='string'?data:JSON.stringify(data,null,2)],{type});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+$('export').onclick=()=>run(async()=>{const bytes=encode(original,formValues());download('ds5-config.json',{format:'ds5-local-v1',bytes:[...bytes]});});
+$('import').onchange=e=>run(async()=>{
+  const file=e.target.files[0];if(!file)return;if(file.size>8192)throw Error('配置文件过大');
+  const json=JSON.parse(await file.text());
+  if(json.format!=='ds5-local-v1'||!Array.isArray(json.bytes)||json.bytes.some(x=>!Number.isInteger(x)||x<0||x>255))throw Error('无效的配置文件');
+  showConfig(encode(original,decode(new Uint8Array(json.bytes))));announce('配置已载入表单','点击「保存并应用」后才会写入接收器。');
+});
+$('diagnostic-export').onclick=()=>download('ds5-diagnostics.json',{app:'alpha.3',time:new Date().toISOString(),firmware,usb:device?{vendorId:device.vendorId,productId:device.productId,productName:device.productName}:null,config:original?decode(original):null,diagnostic,events});
+
+$('readmap').onclick=()=>run(async()=>{
+  await send(0xfb,new Uint8Array([3,Number($('profile').value)]));
+  const bytes=await receive(0xfb);if(bytes.length<126||bytes[1]!==Number($('profile').value))throw Error('映射报告不完整或配置编号不符');
+  remap=bytes.slice(2,126);$('mapping').replaceChildren();$('map-empty').hidden=true;
+  names.forEach((name,i)=>{const row=document.createElement('label');row.append(name);const select=document.createElement('select');select.id=`map${i}`;names.forEach((n,j)=>select.add(new Option(n,String(j))));const type=remap[i*4];if(type!==0)select.add(new Option(`保留已有${type===1?'键盘':'鼠标'}映射`,'keep'));select.value=type===0?String(remap[i*4+1]):'keep';row.append(select);$('mapping').append(row);});
+  announce('映射已读取','修改游戏手柄目标会替换该行原有映射。键盘/鼠标输出仅在 DS 模式有效。');
+});
+$('profile').onchange=()=>{remap=null;$('mapping').replaceChildren();$('map-empty').hidden=false;enableControls();};
+$('savemap').onclick=()=>run(async()=>{const table=remap.slice();for(let i=0;i<31;i++){const value=$(`map${i}`).value;if(value!=='keep')table.set([0,Number(value),0,table[i*4+3]&1],i*4);}await send(0xfb,new Uint8Array([1,Number($('profile').value),...table]));announce('映射保存命令已发送','映射写入不需要切换 USB 身份。','success');log('映射保存命令已发送');});
+$('activemap').onclick=()=>run(async()=>{await send(0xfb,new Uint8Array([5,Number($('profile').value)]));announce('活动映射已切换',`当前使用配置 ${Number($('profile').value)+1}。`,'success');});
+
+navigator.hid?.addEventListener('disconnect',e=>{
+  if(e.device!==device)return;++readGeneration;stopAudio();clearReadState();enableControls();
+  if(pendingMode===null){announce('USB 接收器已断开','重新接入后点击「连接接收器」。','warning');log('USB 设备断开');}
+});
+navigator.hid?.addEventListener('connect',()=>{if(pendingMode!==null){clearTimeout(reconnectTimer);reconnectTimer=setTimeout(reconnectScan,150);}});
+setInterval(async()=>{
+  if(busy||polling||!original||!device?.opened||pendingMode!==null)return;
+  polling=true;
+  try{const s=decodeStatus(await receive(0xf9));renderStatus(s);failures=0;}
+  catch{if(++failures>=3){clearReadState();enableControls();announce('状态读取中断','设备暂时不可访问，请重新连接并读取。','warning');}}
+  finally{polling=false;}
+},180);
+
+async function audioDevices(){
+  const devices=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='audioinput'&&!['default','communications'].includes(d.deviceId));
+  $('audio-device').replaceChildren(new Option('请选择音频输入设备',''));
+  devices.forEach((d,i)=>$('audio-device').add(new Option(d.label||`音频输入 ${i+1}`,d.deviceId)));
+  const controller=devices.find(d=>/DualSense|Pro Controller|DS5|Sony/i.test(d.label));
+  if(controller)$('audio-device').value=controller.deviceId;
+  $('audio-help').textContent=controller?'已找到名称匹配的手柄输入，请点击开始测试。仅在本机处理音频。':'未自动找到手柄名称。请手动确认输入设备；Pro 模式需要先启用「Pro + USB 麦克风」。';
+}
+$('grant-audio').onclick=async()=>{
+  try{if(!navigator.mediaDevices?.getUserMedia)throw Error('此浏览器没有可用的音频接口');const permission=await navigator.mediaDevices.getUserMedia({audio:true,video:false});permission.getTracks().forEach(t=>t.stop());await audioDevices();}
+  catch(e){$('audio-help').textContent=`无法获取音频设备：${e.message}`;}
+};
+function stopAudio(){
+  cancelAnimationFrame(audioAnimation);audioAnimation=0;
+  audioStream?.getTracks().forEach(t=>t.stop());audioStream=null;
+  if(audioContext){audioContext.close().catch(()=>{});audioContext=null;}
+  $('stop-audio').disabled=true;$('start-audio').disabled=false;
+  $('mic-level').style.width='0%';$('mic-level-value').textContent='0%';$('mic-test-label').textContent='本地测试已停止';
+}
+$('start-audio').onclick=async()=>{
+  try{
+    const selected=$('audio-device').value;if(!selected)throw Error('请先授权并选择手柄的音频输入，避免误测电脑麦克风。');
+    stopAudio();audioStream=await navigator.mediaDevices.getUserMedia({audio:{deviceId:{exact:selected}},video:false});
+    audioContext=new AudioContext();const source=audioContext.createMediaStreamSource(audioStream),analyser=audioContext.createAnalyser();analyser.fftSize=256;source.connect(analyser);
+    const buffer=new Uint8Array(analyser.fftSize);$('mic-test-label').textContent=$('audio-device').selectedOptions[0].textContent;$('stop-audio').disabled=false;$('start-audio').disabled=true;
+    const tick=()=>{analyser.getByteTimeDomainData(buffer);let sum=0;for(const v of buffer)sum+=((v-128)/128)**2;const level=Math.min(100,Math.round(Math.sqrt(sum/buffer.length)*220));$('mic-level').style.width=`${level}%`;$('mic-level-value').textContent=`${level}%`;audioAnimation=requestAnimationFrame(tick);};tick();
+  }catch(e){stopAudio();$('audio-help').textContent=`测试未开始：${e.message}`;}
+};
+$('stop-audio').onclick=stopAudio;
+window.addEventListener('pagehide',stopAudio);
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&audioStream)stopAudio();});
+enableControls();
+if(!navigator.hid)announce('浏览器不支持 WebHID','请使用桌面 Chrome / Edge 打开本机配置地址。','warning');
