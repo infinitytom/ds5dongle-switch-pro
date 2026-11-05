@@ -8,7 +8,7 @@ const audioFields=new Set(['speaker_volume','headset_volume','speaker_gain','dis
 const quickFields=new Set(['haptics_gain','polling_rate_mode','inactive_time','disable_led']);
 let device=null,original=null,firmware='',diagnostic=null,remap=null,busy=false,polling=false,failures=0;
 let pendingMode=null,reconnectUntil=0,reconnectTimer=null,readGeneration=0;
-let audioStream=null,audioContext=null,audioAnimation=0;
+let audioStream=null,audioContext=null,audioAnimation=0,audioSession=0;
 const events=[];
 const controls=['refresh','save','reboot','export','import','readmap','profile'];
 
@@ -141,7 +141,9 @@ async function connectTo(selected){
   if(device?.opened&&device!==selected){try{await device.close();}catch{/* Previous enumeration is gone. */}}
   device=selected;if(!device.opened)await device.open();await read();
   const expected=pendingMode;pendingMode=null;clearTimeout(reconnectTimer);
-  if(expected!==null&&activeMode()!==expected)announce('设备重新连接，但模式与目标不同','请查看连接诊断并导出记录；本次没有继续写入配置。','warning');
+  const matched=expected===null||activeMode()===expected;
+  if(!matched)announce('设备重新连接，但模式与目标不同','请查看连接诊断并导出记录；本次没有继续写入配置。','warning');
+  return matched;
 }
 $('connect').onclick=()=>run(async()=>{
   if(!navigator.hid)throw Error('当前浏览器不支持 WebHID。请使用桌面 Chrome / Edge 打开本地配置页。');
@@ -158,7 +160,7 @@ async function reconnectScan(){
   if(!busy&&!polling&&navigator.hid?.getDevices){
     const granted=await navigator.hid.getDevices().catch(()=>[]);
     const selected=granted.find(d=>supportsConfig(d)&&(pendingMode>=3?d.vendorId===0x057e:d.vendorId===0x054c));
-    if(selected){await run(async()=>{await connectTo(selected);announce('模式已应用',`已重新连接：${labels[activeMode()]}。无需手动拔插接收器。`,'success');});if(pendingMode===null)return;}
+    if(selected){await run(async()=>{if(await connectTo(selected))announce('模式已应用',`已重新连接：${labels[activeMode()]}。无需手动拔插接收器。`,'success');});if(pendingMode===null)return;}
   }
   reconnectTimer=setTimeout(reconnectScan,500);
 }
@@ -236,6 +238,7 @@ $('grant-audio').onclick=async()=>{
   catch(e){$('audio-help').textContent=`无法获取音频设备：${e.message}`;}
 };
 function stopAudio(){
+  ++audioSession;
   cancelAnimationFrame(audioAnimation);audioAnimation=0;
   audioStream?.getTracks().forEach(t=>t.stop());audioStream=null;
   if(audioContext){audioContext.close().catch(()=>{});audioContext=null;}
@@ -243,13 +246,17 @@ function stopAudio(){
   $('mic-level').style.width='0%';$('mic-level-value').textContent='0%';$('mic-test-label').textContent='本地测试已停止';
 }
 $('start-audio').onclick=async()=>{
+  let session;
   try{
     const selected=$('audio-device').value;if(!selected)throw Error('请先授权并选择手柄的音频输入，避免误测电脑麦克风。');
-    stopAudio();audioStream=await navigator.mediaDevices.getUserMedia({audio:{deviceId:{exact:selected}},video:false});
+    stopAudio();session=audioSession;$('start-audio').disabled=true;$('stop-audio').disabled=false;
+    const stream=await navigator.mediaDevices.getUserMedia({audio:{deviceId:{exact:selected}},video:false});
+    if(session!==audioSession){stream.getTracks().forEach(t=>t.stop());return;}
+    audioStream=stream;
     audioContext=new AudioContext();const source=audioContext.createMediaStreamSource(audioStream),analyser=audioContext.createAnalyser();analyser.fftSize=256;source.connect(analyser);
     const buffer=new Uint8Array(analyser.fftSize);$('mic-test-label').textContent=$('audio-device').selectedOptions[0].textContent;$('stop-audio').disabled=false;$('start-audio').disabled=true;
     const tick=()=>{analyser.getByteTimeDomainData(buffer);let sum=0;for(const v of buffer)sum+=((v-128)/128)**2;const level=Math.min(100,Math.round(Math.sqrt(sum/buffer.length)*220));$('mic-level').style.width=`${level}%`;$('mic-level-value').textContent=`${level}%`;audioAnimation=requestAnimationFrame(tick);};tick();
-  }catch(e){stopAudio();$('audio-help').textContent=`测试未开始：${e.message}`;}
+  }catch(e){if(session===undefined||session===audioSession){stopAudio();$('audio-help').textContent=`测试未开始：${e.message}`;}}
 };
 $('stop-audio').onclick=stopAudio;
 window.addEventListener('pagehide',stopAudio);

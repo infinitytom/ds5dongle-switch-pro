@@ -70,6 +70,16 @@ const assert=require('node:assert/strict');
  assert.equal(await page.locator('#active-mode').innerText(),'Pro + USB 麦克风');
  await page.locator('[data-view="audio"]').click();
  await page.screenshot({path:'docs/audio-config.png',fullPage:true});
+ await page.evaluate(()=>{
+   document.getElementById('audio-device').add(new Option('Pro Controller fixture','fixture-mic'));
+   document.getElementById('audio-device').value='fixture-mic';
+   Object.defineProperty(navigator,'mediaDevices',{configurable:true,value:{getUserMedia:()=>new Promise(resolve=>{window.resolveAudio=()=>resolve({getTracks:()=>[{stop(){window.audioStopped=true;}}]});})}});
+ });
+ await page.getByRole('button',{name:'开始本地测试',exact:true}).click();
+ assert.equal(await page.locator('#start-audio').isDisabled(),true);
+ await page.locator('[data-view="overview"]').click();
+ await page.evaluate(()=>window.resolveAudio());
+ await page.waitForFunction(()=>window.audioStopped===true);
  await page.setViewportSize({width:390,height:844});
  for(const view of ['audio','advanced','diagnostics','mapping','overview']){
    await page.locator(`[data-view="${view}"]`).click();
