@@ -48,10 +48,9 @@ def select_server(root, ports=range(8765, 8776)):
         existing = existing_config(url, root)
         if existing == 'same':
             return None, url
-        if existing == 'foreign':
-            raise SystemExit(f'Port {port} is in use by another application. Close it and try again.')
-        # Leave the older DS5 tool running and open this version on a new port.
-    raise SystemExit('No free DS5 configuration port (8765-8775). Close older tools and try again.')
+        # Any occupied port may belong to another application or an older
+        # launcher. Leave that service running and try the next local port.
+    raise SystemExit('No available DS5 configuration port. Ports 8765-8775 are occupied; close an unused local service and try again.')
 
 
 if __name__ == '__main__':

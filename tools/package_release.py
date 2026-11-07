@@ -78,7 +78,8 @@ def main():
     ui['README.txt'] = ('Offline configuration: install Python 3 and desktop Chrome or Edge.\n'
                       'Windows: double-click start-config.cmd.\n'
                       'Linux/macOS: python3 web/serve.py\n'
-                      'Open http://localhost:8765 and connect the USB receiver.\n'
+                      'Open the URL printed by the launcher and connect the USB receiver.\n'
+                      'Ports 8765-8775 are tried automatically; occupied ports are skipped.\n'
                       'No internet or npm install is required to use the configuration page.\n'
                       'Switch Pro mode requires this project firmware; hardware compatibility is unverified.\n'
                       'Optional support: alipay-donate.jpg (infinitytom).\n').encode('utf-8')

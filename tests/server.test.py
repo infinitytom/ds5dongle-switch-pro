@@ -39,7 +39,14 @@ class ServerTests(unittest.TestCase):
                     self.assertIsNotNone(fresh)
                     fresh.server_close()
                 (root / 'config.js').write_bytes(b'other application')
-                with self.assertRaises(SystemExit):
+                fresh, target = server_module.select_server(root, [port, 0])
+                try:
+                    self.assertIsNotNone(fresh)
+                    self.assertNotEqual(fresh.server_port, port)
+                    self.assertEqual(target, f'http://127.0.0.1:{fresh.server_port}')
+                finally:
+                    fresh.server_close()
+                with self.assertRaisesRegex(SystemExit, 'No available DS5 configuration port'):
                     server_module.select_server(root, [port])
             finally:
                 server.shutdown()
