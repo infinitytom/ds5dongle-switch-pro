@@ -61,6 +61,12 @@ function updateSummary(){
   document.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('selected',Number(b.dataset.mode)===mode||(Number(b.dataset.mode)===2&&mode<=2)));
   $('mode-note').textContent=mode===6?'独立 Switch 2 Pro 实验协议：输入、体感及 SDL 基础震动转换；静音键映射 C。无耳麦音频，完整 HD Rumble 2 和 Switch 2 主机均未验证。':mode===5?'电脑 XInput + 四通道 USB 音频：前两通道声音，后两通道触觉；普通音频可在音频页转为触觉。音频播放优先于双马达震动，无麦克风。':mode===4?'增加独立 USB 麦克风接口。先在电脑选择此输入设备测试，Switch 2 的复合设备兼容性待实测。':mode===3?'一代 Switch Pro 协议。主机开启有线通信；浏览器普通手柄输入使用标准 0x3F，模拟器可切为完整报告。':'保留 DualSense 原生音频、麦克风、自适应扳机和键鼠功能。';
   if(mode===5&&diagnostic?.extended&&!(diagnostic.capabilities&16))$('mode-note').textContent='当前固件仅提供基础 XInput；四通道音频与音频触觉需要刷入 r5 或更新固件。';
+  if(mode===6){
+    const revision=Number(firmware.match(/Pro-dev1 r(\d+)/)?.[1]||0);
+    $('mode-note').textContent=diagnostic&&!(diagnostic.capabilities&32)?'此接收器固件没有 Pro2 功能，不能保存该模式。请核对连接诊断中的固件版本，网页更新不会升级固件。':
+      revision&&revision<8?'当前固件的 Pro2 主要面向电脑，缺少 NS2 主机身份与配对握手。主机测试需 r8 或更新固件；本接收器尚未通过 NS2 验收。':
+      'Pro2 实验：已补充原生 USB 身份与配对握手；电脑 0x05 体感可用，主机 0x09 体感未完成。无耳麦音频与完整 HD Rumble 2，NS2 主机待测。';
+  }
   if(!original){$('apply-summary').textContent=pendingMode!==null?'正在重新连接设备':'等待连接设备';$('apply-detail').textContent=pendingMode!==null?'需要时点击右上角授权新模式接收器':'配置由接收器保存到闪存';$('save-indicator').className='save-indicator';return;}
   const before=decode(original),values=formValues();
   const dirty=fields.filter(([key])=>Math.abs(Number(before[key])-Number(values[key]))>.00001).length;
@@ -260,7 +266,7 @@ $('import').onchange=e=>run(async()=>{
   if(json.format!=='ds5-local-v1'||!Array.isArray(json.bytes)||json.bytes.some(x=>!Number.isInteger(x)||x<0||x>255))throw Error('无效的配置文件');
   showConfig(encode(original,decode(new Uint8Array(json.bytes))));announce('配置已载入表单','点击「保存并应用」后才会写入接收器。');
 });
-$('diagnostic-export').onclick=()=>download('ds5-diagnostics.json',{app:'alpha.8',time:new Date().toISOString(),firmware,usb:device?{vendorId:device.vendorId,productId:device.productId,productName:device.productName}:null,config:original?decode(original):null,diagnostic,motionDiagnostic,events});
+$('diagnostic-export').onclick=()=>download('ds5-diagnostics.json',{app:'alpha.9',time:new Date().toISOString(),firmware,usb:device?{vendorId:device.vendorId,productId:device.productId,productName:device.productName}:null,config:original?decode(original):null,diagnostic,motionDiagnostic,events});
 
 $('readmap').onclick=()=>run(async()=>{
   await send(0xfb,new Uint8Array([3,Number($('profile').value)]));

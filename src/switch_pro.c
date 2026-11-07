@@ -171,17 +171,29 @@ static void rumble(struct switch_pro *s, const uint8_t *p, uint32_t ms)
         m->amp[1] = amplitude(li);
     }
 }
+bool switch_pro_usb_announce(struct switch_pro *s, uint8_t out[64])
+{
+    if(s->usb_identified) return false;
+    memset(out,0,64);out[0]=0x81;out[1]=1;out[3]=3;
+    for(unsigned i=0;i<6;i++) out[4+i]=s->mac[5-i];
+    s->usb_identified=true;return true;
+}
 unsigned switch_pro_output(struct switch_pro *s, const uint8_t *p, unsigned len,
                            uint32_t ms, uint8_t reply[64])
 {
     if (!p || len < 2) return 0;
     memset(reply, 0, 64);
     if (p[0] == 0x80) {
+        s->usb_identified=true;
         reply[0] = 0x81; reply[1] = p[1];
         if (p[1] == 1) {
             reply[2] = 0; reply[3] = 3;
             for (unsigned i = 0; i < 6; ++i) reply[4+i] = s->mac[5-i];
         } else if (p[1] == 4 || p[1] == 5) {
+            /* A console may finish the wired handshake without selecting a
+             * report first. Default to full input only in that case; never
+             * override a mode already negotiated by SDL or another host. */
+            if(p[1]==4 && !s->mode_selected) { s->mode=0x30;s->usb_stream=true; }
             /* Disable/enable the USB idle timeout, NOT input report mode.
              * Ryujinx's NpadHdRumble sends 80 05 after SDL selected 0x30.
              * Downgrading here silently removes its sensor stream while
@@ -206,7 +218,7 @@ unsigned switch_pro_output(struct switch_pro *s, const uint8_t *p, unsigned len,
         memcpy(reply + 19, s->mac, 6); reply[25] = 1; reply[26] = 1; break;
     case 0x03:
         if (len < 12 || (p[11] != 0x30 && p[11] != 0x3f)) reply[13] = 0;
-        else { s->mode = p[11];s->usb_stream=true; }
+        else { s->mode = p[11];s->mode_selected=true;s->usb_stream=true; }
         break;
     case 0x04: reply[13] = 0x83; break;
     case 0x08: case 0x22: case 0x38: break;

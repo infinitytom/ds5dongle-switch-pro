@@ -1,19 +1,64 @@
 #include "pro2.h"
+#include "ns2_pairing_crypto.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
 static int get16(const uint8_t *p) { return (int16_t)(p[0]|p[1]<<8); }
 static unsigned get32(const uint8_t *p) { return p[0]|(unsigned)p[1]<<8|(unsigned)p[2]<<16|(unsigned)p[3]<<24; }
-static unsigned command(struct pro2_state *s,uint8_t cmd,uint8_t sub,uint8_t payload,uint8_t out[80])
+static unsigned command(struct pro2_state *s,uint8_t cmd,uint8_t sub,uint8_t payload,uint8_t out[PRO2_REPLY_MAX])
 {
     uint8_t p[16]={0};p[0]=cmd;p[1]=0x91;p[3]=sub;p[5]=4;p[8]=payload;
     return pro2_command(s,p,12,out);
 }
 int main(void)
 {
-    struct pro2_state s;struct switch_pro in;uint8_t reply[80],report[64];
+    struct pro2_state s;struct switch_pro in;uint8_t reply[PRO2_REPLY_MAX],report[64];
     const uint8_t mac[6]={2,3,4,5,6,7};switch_pro_init(&in,mac);pro2_init(&s);
     assert(s.mode==9 && s.streaming);
+    /* Console EP0 requests precede bulk commands. The captured OUT request
+     * carries wValue=0x0276; treating every nonzero value as invalid stalls it. */
+    {
+        uint32_t n;uint8_t control[64],info[16];pro2_set_mac(&s,mac);
+        assert(pro2_control(&s,0xc0,3,0,0,64,control,&n)&&n==64);
+        assert(control[0]==1&&control[0x12]==0x7e&&control[0x14]==0x69);
+        assert(pro2_control(&s,0xc0,3,0,0,7,control,&n)&&n==7);
+        assert(pro2_control(&s,0xc0,2,0,0,64,control,&n)&&n==16);
+        memcpy(info,control,16);assert(!memcmp(info+10,mac,6));
+        assert(pro2_control(&s,0x40,4,0x0276,0,0,control,&n)&&!n);
+        assert(!pro2_control(&s,0x40,4,0x0276,0,1,control,&n));
+        assert(!pro2_control(&s,0x80,3,0,0,64,control,&n));
+        assert(!pro2_control(&s,0xc0,0x20,0,4,64,control,&n));
+        assert(command(&s,0x10,1,0,reply)==20&&!memcmp(reply+8,info,3));
+        /* Native key exchange then challenge: A1=B1 gives an all-zero LTK.
+         * AES-128(key=0, plaintext=0) has an independent known answer. */
+        uint8_t p[25]={0x15,0x91,0,4,0,17,0,0,1};
+        const uint8_t b1[16]={0x5c,0xf6,0xee,0x79,0x2c,0xdf,0x05,0xe1,0xba,0x2b,0x63,0x25,0xc4,0x1a,0x5f,0x10};
+        memcpy(p+9,b1,16);assert(pro2_command(&s,p,25,reply)==25&&!memcmp(reply+9,b1,16));
+        p[3]=2;memset(p+9,0,16);
+        const uint8_t aes_zero[16]={0x66,0xe9,0x4b,0xd4,0xef,0x8a,0x2c,0x3b,0x88,0x4c,0xfa,0x59,0xca,0x34,0x2b,0x2e};
+        assert(pro2_command(&s,p,25,reply)==25&&!memcmp(reply+9,aes_zero,16));
+        assert(command(&s,0x15,1,0,reply)==17&&!memcmp(reply+11,info+10,6));
+        assert(command(&s,0x15,3,0,reply)==9&&reply[8]==1);
+        for(unsigned short_len=8;short_len<25;short_len++) {
+            p[5]=(uint8_t)(short_len-8);struct pro2_state before=s;
+            assert(!pro2_command(&s,p,short_len,reply)&&!memcmp(&s,&before,sizeof(s)));
+        }
+        /* Console uses variable-size flash reads as well as SDL's 64-byte reads. */
+        uint8_t read[16]={2,0x91,0,4,0,8,0,0,80,0,0,0,0,0x30,1,0};
+        assert(pro2_command(&s,read,16,reply)==PRO2_REPLY_MAX&&reply[8]==80);
+        assert(reply[4]==0&&reply[5]==0xf8&&reply[16]==1&&reply[34]==0x7e);
+        read[8]=81;assert(!pro2_command(&s,read,16,reply));
+        uint8_t configure[16]={0x0c,0x91,0,6,0,8,0,0,0,0,0,0,4};
+        assert(pro2_command(&s,configure,16,reply)==48&&reply[12]==4);
+        assert(command(&s,7,1,0,reply)==9);
+        assert(command(&s,0x16,1,0,reply)==32);
+        assert(command(&s,0x11,1,0,reply)==12&&reply[8]==3);
+        assert(command(&s,0x11,3,0,reply)==37);
+        assert(command(&s,0x0c,4,0x27,reply)==12);
+        assert(command(&s,0x0c,3,4,reply)==12&&s.mask==0x23&&s.features==0x23);
+        assert(command(&s,0x0c,4,4,reply)==12&&s.features==0x23);
+        pro2_init(&s);
+    }
     /* Independent HID Usage 1..21 expectations, one physical key at a time.
      * Testing only 0x05 missed the old default 0x09 / Pro-1 layout mismatch. */
     const struct {unsigned byte, mask, usage;} buttons[]={
@@ -72,10 +117,10 @@ int main(void)
     for(unsigned b=0;b<21;b++)assert(wire_to_usage[b]==browser_buttons[b]+1);
     for(unsigned a=0;a<4;a++)assert(axis_usages[a]==0x30+a);
     for(unsigned hs=0;hs<2;hs++) for(unsigned other=0;other<2;other++) {
-        const uint8_t *d=pro2_config_descriptor(hs!=0,other!=0);assert(d[1]==(other?7:2)&&d[2]==64&&d[4]==2);
+        const uint8_t *d=pro2_config_descriptor(hs!=0,other!=0);assert(d[1]==(other?7:2)&&d[2]==PRO2_CONFIG_LEN&&d[4]==2);
         unsigned seen=0,endpoints=0;uint16_t hidlen;pro2_hid_descriptor(&hidlen);
-        for(unsigned i=9;i<64;i+=d[i]) {
-            assert(d[i]>=2 && i+d[i]<=64);
+        for(unsigned i=9;i<PRO2_CONFIG_LEN;i+=d[i]) {
+            assert(d[i]>=2 && i+d[i]<=PRO2_CONFIG_LEN);
             if(d[i+1]==5) {
                 unsigned num=d[i+2]&15;assert(num>=1&&num<=4&&!(seen&(1u<<num)));seen|=1u<<num;endpoints++;
                 if(d[i+3]==2) assert((d[i+4]|d[i+5]<<8)==(hs?512:64));
@@ -129,6 +174,6 @@ int main(void)
     assert(report[5]==0&&report[6]==0&&report[7]==0&&get32(report+43)==0);
     assert(report[11]==0 && report[12]==8 && report[13]==128);
     for(unsigned n=0;n<=64;n++) { uint8_t fuzz[64];memset(fuzz,0xff,sizeof(fuzz));pro2_command(&s,fuzz,n,reply);pro2_rumble(&s,fuzz,n,ds); }
-    puts("Pro2: SDL-style initialization, calibration, input, IMU units, rumble fallback, malformed commands and USB/WinUSB descriptors passed.");
+    puts("Pro2: native EP0, AES pairing, initialization, feature masks, SDL input, calibration, IMU, rumble fallback and USB/WinUSB descriptors passed.");
     return 0;
 }

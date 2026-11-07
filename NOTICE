@@ -50,4 +50,20 @@ derived from the following third-party works:
    Copyright (C) 2025-2026 Peter Repukat. The GPL-3.0 text is in LICENSE.
    The C hardware transport and DualSense conversion are this project's additions.
 
+7. notsosaelin/PicoSwitch2 (Apache-2.0)
+   src/ns2_pairing_crypto.c and .h are from v1.3.0, commit
+   e50f929a27bf822fc46665c92ce54476bff90184 (added attribution header).
+   https://github.com/notsosaelin/PicoSwitch2/tree/v1.3.0
+   Native USB EP0, pairing and initialization behavior in src/pro2.c is
+   adapted from its hardware-validated src/switch_pro2/switch_pro2.c.
+   Apache license text: lib/PicoSwitch2-APACHE-2.0.txt.
+
+8. Dycool/NS-PC-Control (GPL-3.0)
+   https://github.com/Dycool/NS-PC-Control/tree/f0cde8b8d33c86a77863b6fd4d13c36433e14576
+   Native EP0 identity, feature-mask and memory-read framing in src/pro2.c
+   also references server/src/switch2_native.cpp. GPL text is in LICENSE.
+
+Switch Pro startup behavior was cross-checked against the MIT-licensed
+OpenStickCommunity/GP2040-CE SwitchProDriver; no source file was copied.
+
 All other code is original to this project and licensed under GPL-3.0.

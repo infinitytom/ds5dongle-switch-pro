@@ -4,6 +4,7 @@
  * SDL's Switch2 driver is the interoperability reference, not console proof. */
 #include "pro2.h"
 #include "xbox.h"
+#include "ns2_pairing_crypto.h"
 #include <string.h>
 #include <math.h>
 
@@ -17,48 +18,109 @@ static int get16(const uint8_t *p) { return (int16_t)(p[0]|p[1]<<8); }
 static unsigned axis(uint8_t x) { return x<=128 ? x*16u : 2048u+(x-128u)*2047u/127u; }
 static void stick(uint8_t *p, unsigned x, unsigned y) { p[0]=(uint8_t)x;p[1]=(uint8_t)((x>>8)|(y<<4));p[2]=(uint8_t)(y>>4); }
 
-void pro2_init(struct pro2_state *s) { memset(s,0,sizeof(*s));s->mode=9;s->streaming=true;s->mask=0x27; }
-unsigned pro2_command(struct pro2_state *s, const uint8_t *p, unsigned len, uint8_t reply[80])
+void pro2_init(struct pro2_state *s) { memset(s,0,sizeof(*s));s->mode=9;s->streaming=true;s->mask=0x27;s->mac[0]=2; }
+void pro2_set_mac(struct pro2_state *s, const uint8_t mac[6]) { memcpy(s->mac,mac,6); }
+
+/* EP0 structure and native flash-read framing cross-checked against
+ * Dycool/NS-PC-Control (GPL-3.0), server/src/switch2_native.cpp.
+ * Synthetic identity uses this adapter's MAC, not another controller's keys.
+ * Native USB pairing follows hardware-validated PicoSwitch2 v1.3.0.
+ * Audio, NFC tag service and firmware-update commands remain unsupported. */
+static const uint8_t device_key_b1[16]={0x5c,0xf6,0xee,0x79,0x2c,0xdf,0x05,0xe1,0xba,0x2b,0x63,0x25,0xc4,0x1a,0x5f,0x10};
+static const uint8_t firmware_info[12]={2,0,0x11,2,0x0c,0,0,0,0,2,2,0};
+static void identity(uint8_t out[64])
+{
+    memset(out,0xff,64);out[0]=1;out[1]=0;
+    memcpy(out+2,"DS5-PRO2-00000000",16);
+    out[0x12]=0x7e;out[0x13]=5;out[0x14]=0x69;out[0x15]=0x20;
+    out[0x16]=1;out[0x17]=6;out[0x18]=1;
+    memset(out+0x19,0x23,3);memset(out+0x1c,0xa0,3);
+    memset(out+0x1f,0xe6,3);memset(out+0x22,0x32,3);
+}
+bool pro2_control(const struct pro2_state *s, uint8_t type, uint8_t request,
+                  uint16_t value, uint16_t index, uint16_t requested,
+                  uint8_t reply[64], uint32_t *len)
+{
+    *len=0;
+    if(index>1) return false;
+    if((type==0x40 || type==0x41) && request==4 && !requested) return true;
+    if(value) return false;
+    if(type!=0xc0 && type!=0xc1) return false;
+    if(request==3) { identity(reply);*len=requested<64?requested:64;return true; }
+    if(request==2) {
+        memset(reply,0,16);memcpy(reply,firmware_info,3);reply[6]=firmware_info[4];
+        memcpy(reply+10,s->mac,6);*len=requested<16?requested:16;return true;
+    }
+    return false;
+}
+unsigned pro2_command(struct pro2_state *s, const uint8_t *p, unsigned len, uint8_t reply[PRO2_REPLY_MAX])
 {
     if(!p || len<8 || len>64 || p[1]!=0x91 || p[6] || p[7] || p[5]>56 || len!=8u+p[5]) return 0;
     /* Every mutation below requires the full command-specific payload. */
     uint8_t cmd=p[0], sub=p[3];
-    if(cmd==2 && (sub!=1 || len!=16)) return 0;
+    if(cmd==2 && ((sub!=1 && sub!=4) || len!=16 || (sub==4 && p[8]>80))) return 0;
     if(cmd==3 && (sub==3 || sub==10) && len!=12) return 0;
     if(cmd==3 && sub==13 && len!=16) return 0;
-    if(cmd==0x0c && len!=12) return 0;
+    if(cmd==0x0c && (sub==6 ? len<16 : len!=12)) return 0;
     if(cmd==9 && (sub!=7 || len!=16)) return 0;
-    memset(reply,0,80);reply[0]=cmd;reply[1]=1;reply[2]=p[2];reply[3]=sub;reply[4]=0x10;reply[5]=0x78;
+    if(cmd==0x15 && (sub<1 || sub>4 || ((sub==2 || sub==4) && len<25))) return 0;
+    memset(reply,0,PRO2_REPLY_MAX);reply[0]=cmd;reply[1]=1;reply[2]=p[2];reply[3]=sub;reply[5]=0xf8;
     if(cmd==2) {
         uint32_t address=0;for(unsigned i=0;i<4;i++) address|=(uint32_t)p[12+i]<<(8*i);
-        reply[8]=64;put32(reply+12,address);
-        if(address==0x13000) memcpy(reply+18,"DS5-PRO2-00000000",16);
+        unsigned count=sub==1?64:p[8];reply[8]=(uint8_t)count;put32(reply+12,address);
+        if(address>=0x13000 && address<0x13040) {
+            uint8_t info[64];identity(info);
+            for(unsigned i=0;i<count;i++) reply[16+i]=address-0x13000+i<64?info[address-0x13000+i]:0xff;
+        }
         if(address==0x13080 || address==0x130c0) {
             stick(reply+16+0x28,2048,2048);stick(reply+16+0x2b,2047,2047);stick(reply+16+0x2e,2048,2048);
         }
         /* Other readable calibration blocks have zero biases and no user magic. */
-        return 80;
+        return 16+count;
     }
     if(cmd==3) {
-        if(sub==10) { if(p[8]!=5 && p[8]!=9) return 0;s->mode=p[8]; }
+        if(sub==10) { if(p[8]!=5 && p[8]!=9) return 0;s->mode=p[8];s->streaming=true; }
         if(sub==3 || sub==13) { s->streaming=p[8]!=0;reply[8]=1;return 12; }
         return 8;
     }
     if(cmd==0x0c) {
+        reply[4]=0x10;reply[5]=0x78;
         uint8_t flags=p[8]&0x27;
         if(sub==1) { /* Buttons, sticks, IMU, classic rumble fallback; no mouse. */
             reply[12]=(flags&1)?7:0;reply[13]=(flags&2)?7:0;
             reply[14]=(flags&4)?1:0;reply[17]=(flags&0x20)?3:0;return 20;
         }
+        if(sub==6) { reply[12]=p[12];return 48; }
         if(sub==2) { s->mask=flags;s->features&=flags; }
-        else if(sub==3) s->features=0;
+        else if(sub==3) { s->mask&=(uint8_t)~flags;s->features&=(uint8_t)~flags; }
         else if(sub==4) s->features|=flags&s->mask;
         else if(sub==5) s->features&=(uint8_t)~flags;
         else return 0;
         return 12;
     }
-    if(cmd==1 || cmd==7 || cmd==8 || cmd==9 || cmd==10 || cmd==17) return 8;
-    return 0; /* No fake ACK for authentication, audio or unimplemented commands. */
+    if(cmd==0x15) {
+        reply[8]=1;
+        if(sub==1) { reply[9]=4;reply[10]=1;memcpy(reply+11,s->mac,6);return 17; }
+        if(sub==4) { ns2_pairing_derive_ltk(p+9,device_key_b1,s->ltk);memcpy(reply+9,device_key_b1,16);return 25; }
+        if(sub==2) { ns2_pairing_challenge(s->ltk,p+9,reply+9);return 25; }
+        return 9;
+    }
+    if(cmd==7) return 9;
+    if(cmd==0x16) return 32;
+    if(cmd==0x10 && sub==1) { memcpy(reply+8,firmware_info,12);return 20; }
+    if(cmd==0x0b && (sub==3 || sub==4)) {
+        static const uint8_t battery[2][4]={{0xa5,0x0e,0,0},{0x34,0,0x83,0}};
+        memcpy(reply+8,battery[sub-3],4);return 12;
+    }
+    if(cmd==0x11 && sub==1) { reply[8]=3;return 12; }
+    if(cmd==0x11 && sub==3) {
+        static const uint8_t parameters[29]={1,0xc0,3,0,0,0xe7,0xd0,0x1c,0x3b,0x79,0x22,0xa0,0x3a,
+            0x0a,0xe8,0x9c,0x42,0x58,0xa0,0x0b,0x42,0x0a,0xe8,0x9c,0x41,0x58,0xa0,0x0b,0x41};
+        memcpy(reply+8,parameters,29);return 37;
+    }
+    if(cmd==1 && sub==0x0c) { const uint8_t nfc_version[4]={0x61,0x12,0x50,0x10};memcpy(reply+8,nfc_version,4);return 12; }
+    if(cmd==8 || cmd==9 || cmd==10) return 8;
+    return 0; /* No fake ACK for audio, firmware update or unknown commands. */
 }
 void pro2_report(struct pro2_state *s, const struct switch_pro *in, uint32_t us, uint8_t out[64])
 {
@@ -161,9 +223,11 @@ static const uint8_t hid[]={
 };
 static const uint8_t config[]={
     9,2,PRO2_CONFIG_LEN,0,2,1,0,0x80,250,
+    8,11,0,1,3,0,0,0,
     9,4,0,0,2,3,0,0,0,
     9,0x21,0x11,1,0,1,0x22,sizeof(hid)&255,sizeof(hid)>>8,
     7,5,PRO2_EP_IN,3,64,0,4,7,5,PRO2_EP_OUT,3,64,0,4,
+    8,11,1,1,0xff,0,0,0,
     9,4,1,0,2,0xff,0,0,0,
     7,5,PRO2_BULK_OUT,2,64,0,0,7,5,PRO2_BULK_IN,2,64,0,0
 };
@@ -174,8 +238,10 @@ const uint8_t *pro2_config_descriptor(bool hs,bool other)
 {
     static uint8_t result[4][sizeof(config)];uint8_t *p=result[(hs?2:0)+(other?1:0)];
     memcpy(p,config,sizeof(config));p[1]=other?7:2;
-    p[33]=p[40]=hs?6:4;
-    if(hs) { p[54]=p[61]=0;p[55]=p[62]=2; } /* HS bulk MPS must be 512. */
+    for(unsigned i=9;i<sizeof(config);i+=p[i]) if(p[i+1]==5) {
+        if(p[i+3]==3) p[i+6]=hs?6:4;
+        else if(hs) { p[i+4]=0;p[i+5]=2; } /* HS bulk MPS must be 512. */
+    }
     return p;
 }
 

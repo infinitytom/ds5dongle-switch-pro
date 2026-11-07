@@ -86,13 +86,21 @@ int main(void){
  struct switch_pro s;uint8_t r[64],d[63]={0},mac[6]={2,3,4,5,6,7};
  switch_pro_init(&s,mac);switch_pro_report(&s,10,r);assert(r[0]==0x30&&ux(r+6)==2048&&uy(r+6)==2048);
  switch_pro_simple_report(&s,r);assert(s.mode==0x3f&&r[0]==0x3f&&r[3]==8&&r[4]==0&&r[5]==128);
+ assert(switch_pro_usb_announce(&s,r)&&r[0]==0x81&&r[1]==1&&r[4]==7&&r[9]==2);
+ assert(!switch_pro_usb_announce(&s,r));
  uint8_t usb[2]={0x80,1};assert(switch_pro_output(&s,usb,2,0,r)==64);assert(r[0]==0x81&&r[1]==1&&r[3]==3&&r[4]==7&&r[9]==2);
  usb[1]=2;assert(switch_pro_output(&s,usb,2,0,r)==64&&r[1]==2);
  usb[1]=3;assert(switch_pro_output(&s,usb,2,0,r)==64&&r[1]==3);
  usb[1]=4;assert(switch_pro_output(&s,usb,2,0,r)==0&&s.usb_stream);
+ assert(s.mode==0x30); /* Console handshake can finish without subcommand 03. */
  sub(&s,2,0,r);assert(r[13]==0x82&&r[17]==3&&!memcmp(r+19,mac,6));
  sub(&s,3,0x30,r);assert(s.mode==0x30&&r[13]==0x80);sub(&s,3,0x31,r);assert(r[13]==0);
  sub(&s,3,0x3f,r);assert(s.mode==0x3f&&r[13]==0x80);sub(&s,3,0x30,r);
+ {
+  struct switch_pro browser;switch_pro_init(&browser,mac);sub(&browser,3,0x3f,r);
+  usb[1]=4;assert(!switch_pro_output(&browser,usb,2,0,r)&&browser.mode==0x3f);
+  assert(!switch_pro_usb_announce(&browser,r));
+ }
  sub(&s,0x40,1,r);assert(s.imu);sub(&s,0x30,3,r);assert(s.player_leds==3);sub(&s,0x31,0,r);assert(r[13]==0xb0&&r[15]==3);
  /* Ryujinx NpadHdRumble.InitializeDevice: 80 05 arrives after SDL set 0x30.
   * Both timeout commands must preserve the stream, IMU and vibration state. */

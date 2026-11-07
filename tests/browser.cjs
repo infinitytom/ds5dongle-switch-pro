@@ -15,7 +15,7 @@ const assert=require('node:assert/strict');
        if(window.failReport===id)throw Error('fixture read failed');
        let data;
        if(id===0xf7)data=new Uint8Array([id,...cfg]);
-       if(id===0xf8)data=new Uint8Array([id,...new TextEncoder().encode(window.legacyFirmware?'TEST Pro-dev1':'TEST Pro-dev1 r7')]);
+       if(id===0xf8)data=new Uint8Array([id,...new TextEncoder().encode(window.legacyFirmware?'TEST Pro-dev1':'TEST Pro-dev1 r8')]);
        if(id===0xf9){data=new Uint8Array(54);data[0]=id;data[1]=210;data[12]=80;data[14]=0xd5;data[15]=2;data[16]=activeMode;data[17]=1;data[18]=[3,4].includes(activeMode)?0x30:activeMode===6?9:activeMode===5?0:1;data[19]=1;data[32]=data[33]=data[34]=data[35]=128;data[39]=8;data[52]=window.noXbox?7:window.noPro2?31:window.noMotion?63:127;data[53]=saveStatus;}
        if(id===0xfa){
          data=new Uint8Array(64);data[0]=id;data[1]=0xa8;data[2]=1;

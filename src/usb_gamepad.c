@@ -35,9 +35,16 @@ static bool current_pro2_mode;
 static struct pro2_state pro2;
 static struct usbd_interface pro2_bulk_intf;
 static struct usbd_endpoint pro2_bulk_out_ep, pro2_bulk_in_ep;
-static USB_NOCACHE_RAM_SECTION uint8_t pro2_bulk_out[512], pro2_bulk_reply[80];
+static USB_NOCACHE_RAM_SECTION uint8_t pro2_bulk_out[512], pro2_bulk_reply[PRO2_REPLY_MAX], pro2_control_reply[64];
 static volatile unsigned pro2_reply_len, pro2_reply_offset;
 static volatile bool pro2_bulk_busy;
+static int pro2_vendor_request(uint8_t busid, struct usb_setup_packet *setup, uint8_t **data, uint32_t *len)
+{
+    (void)busid;
+    if(!current_pro2_mode || !pro2_control(&pro2,setup->bmRequestType,setup->bRequest,
+            setup->wValue,setup->wIndex,setup->wLength,pro2_control_reply,len)) return -1;
+    *data=pro2_control_reply;return 0;
+}
 static struct usbd_interface xbox_intf;
 static struct usbd_endpoint xbox_config_ep;
 static uint8_t xbox_rumble[8]={0,8};
@@ -148,7 +155,8 @@ static void pro2_bulk_out_handler(uint8_t busid,uint8_t ep,uint32_t nbytes)
 {
     if(nbytes==12 && pro2_bulk_out[0]==0x0c && pro2_bulk_out[1]==0x91 &&
        pro2_bulk_out[5]==4 && !pro2_bulk_out[6] && !pro2_bulk_out[7] &&
-       (pro2_bulk_out[3]==3 || (pro2_bulk_out[3]==5 && (pro2_bulk_out[8]&0x20))))
+       ((pro2_bulk_out[3]==2 && !(pro2_bulk_out[8]&0x20)) ||
+        ((pro2_bulk_out[3]==3 || pro2_bulk_out[3]==5) && (pro2_bulk_out[8]&0x20))))
         xbox_stop_rumble_isr();
     pro_receive_isr(pro2_bulk_out,nbytes);
     usbd_ep_start_read(busid,ep,pro2_bulk_out,usbd_get_port_speed(busid)==USB_SPEED_HIGH?512:64);
@@ -657,7 +665,10 @@ static const uint8_t device_qualifier_desc[] = {
 static const uint8_t *desc_qualifier_cb(uint8_t speed)
 {
     (void)speed;
-    return device_qualifier_desc;
+    static uint8_t descriptor[sizeof(device_qualifier_desc)];
+    memcpy(descriptor,device_qualifier_desc,sizeof(descriptor));
+    memcpy(descriptor+4,device_desc+4,3);
+    return descriptor;
 }
 
 static uint8_t other_speed_desc[USB_HID_CONFIG_SIZE];
@@ -1006,7 +1017,7 @@ void usb_gamepad_process_deferred(void)
         pro_output_entry_t item;
         taskENTER_CRITICAL();
         if(pro_reset_pending) {
-            pro_reset_pending=false;switch_pro_init(&pro,pro_mac);pro2_init(&pro2);
+            pro_reset_pending=false;switch_pro_init(&pro,pro_mac);pro2_init(&pro2);pro2_set_mac(&pro2,pro_mac);
         }
         if(!pro2_bulk_busy && pro2_reply_offset>=pro2_reply_len && xQueueReceive(pro_output_queue,&item,0)==pdTRUE) {
             if(item.generation==pro_generation) {
@@ -1050,6 +1061,11 @@ void usb_gamepad_process_deferred(void)
             }
             taskEXIT_CRITICAL();
         }
+        taskENTER_CRITICAL();
+        if(usb_configured && (pro_reply_head+1)%16!=pro_reply_tail && switch_pro_usb_announce(&pro,response)) {
+            memcpy(pro_replies[pro_reply_head],response,64);pro_reply_head=(pro_reply_head+1)%16;
+        }
+        taskEXIT_CRITICAL();
         static uint32_t last_input_ms;
         if ((uint32_t)(ms - last_input_ms) >= 8 && (pro.usb_stream || pro.mode == 0x3f)) {
             taskENTER_CRITICAL();
@@ -1114,10 +1130,12 @@ int usb_gamepad_init(usb_gamepad_output_cb_t output_cb)
         if (!pro_output_queue) return -1;
         device_desc[8] = 0x7e; device_desc[9] = 0x05;
         device_desc[10] = 0x09; device_desc[11] = 0x20;
-        device_desc[12] = 0x07; /* r7 adds the vendor motion diagnostic report */
+        device_desc[12] = 0x08; /* r8 adds console-oriented startup handling */
     }
     if(current_pro2_mode) {
-        pro2_init(&pro2);device_desc[10]=0x69;device_desc[11]=0x20;device_desc[12]=2;device_desc[13]=2;
+        pro2_init(&pro2);pro2_set_mac(&pro2,pro_mac);
+        device_desc[4]=0xef;device_desc[5]=2;device_desc[6]=1;
+        device_desc[10]=0x69;device_desc[11]=0x20;device_desc[12]=3;device_desc[13]=2;
         pro2_property_table[1]=pro2_os_properties();usb_desc.msosv1_descriptor=&pro2_msos;
     }
     if (current_xbox_mode) {
@@ -1191,7 +1209,7 @@ int usb_gamepad_init(usb_gamepad_output_cb_t output_cb)
         rd=xbox_hid_descriptor(&rd_len);
     }
     usbd_add_interface(0, usbd_hid_init_intf(0, &hid_intf, rd, rd_len));
-    if(current_pro2_mode) usbd_add_interface(0,&pro2_bulk_intf);
+    if(current_pro2_mode) { pro2_bulk_intf.vendor_handler=pro2_vendor_request;usbd_add_interface(0,&pro2_bulk_intf); }
     if (current_switch_mic) usb_audio_register_pro_mic(0);
     LOG_INF("[USB-INIT] Gamepad HID intf added (report_desc=%uB, DSE=%d)\n",
            rd_len, current_dse_mode);
@@ -1545,10 +1563,10 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id,
             *len  = 1 + cfg_len;
             LOG_INF("[USB] GET_REPORT(0xF7) → config %u bytes\n", cfg_len);
         } else if (report_id == 0xF8) {
-            uint16_t ver_len = strlen(FIRMWARE_VERSION " Pro-dev1 r7");
+            uint16_t ver_len = strlen(FIRMWARE_VERSION " Pro-dev1 r8");
             if (ver_len > FEATURE_DATA_MAX)
                 ver_len = FEATURE_DATA_MAX;
-            memcpy(feature_resp_buf + 1, FIRMWARE_VERSION " Pro-dev1 r7", ver_len);
+            memcpy(feature_resp_buf + 1, FIRMWARE_VERSION " Pro-dev1 r8", ver_len);
             *data = feature_resp_buf;
             *len  = 1 + ver_len;
             LOG_INF("[USB] GET_REPORT(0xF8) → firmware version\n");

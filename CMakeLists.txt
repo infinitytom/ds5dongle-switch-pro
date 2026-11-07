@@ -23,6 +23,7 @@ target_sources(app PRIVATE
     src/switch_usb.c
     src/xbox.c
     src/pro2.c
+    src/ns2_pairing_crypto.c
     src/ds5_usb_audio.c
     src/audio.c
     src/usb_wake.c

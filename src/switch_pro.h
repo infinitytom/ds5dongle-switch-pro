@@ -7,7 +7,7 @@
 struct switch_motor { float hz[2], amp[2], phase[2]; };
 struct switch_pro {
     uint8_t ds[63], mac[6], mode, player_leds;
-    bool imu, vibration, usb_stream;
+    bool imu, vibration, usb_stream, usb_identified, mode_selected;
     uint8_t gyro_range, accel_range;
     uint32_t rumble_ms;
     struct switch_motor motor[2];
@@ -19,6 +19,8 @@ void switch_pro_input(struct switch_pro *s, const uint8_t ds[63]);
 void switch_pro_calibration(struct switch_pro *s, const uint8_t *data, unsigned len);
 void switch_pro_report(const struct switch_pro *s, uint32_t ms, uint8_t out[64]);
 void switch_pro_simple_report(const struct switch_pro *s, uint8_t out[64]);
+/* One unsolicited wired identify notification after enumeration. */
+bool switch_pro_usb_announce(struct switch_pro *s, uint8_t out[64]);
 /* Returns response length (64), or zero when no reply is required. */
 unsigned switch_pro_output(struct switch_pro *s, const uint8_t *p, unsigned len,
                            uint32_t ms, uint8_t reply[64]);

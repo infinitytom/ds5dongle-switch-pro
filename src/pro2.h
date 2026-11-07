@@ -6,11 +6,17 @@
 #define PRO2_EP_OUT 0x01
 #define PRO2_BULK_IN 0x82
 #define PRO2_BULK_OUT 0x03
-#define PRO2_CONFIG_LEN 64
-struct pro2_state { uint8_t mode, features, mask; bool streaming; uint32_t counter; };
+#define PRO2_CONFIG_LEN 80
+#define PRO2_REPLY_MAX 96
+struct pro2_state { uint8_t mode, features, mask, mac[6], ltk[16]; bool streaming; uint32_t counter; };
 void pro2_init(struct pro2_state *s);
-/* A response can span two USB packets (64 + 16 bytes). */
-unsigned pro2_command(struct pro2_state *s, const uint8_t *data, unsigned len, uint8_t reply[80]);
+void pro2_set_mac(struct pro2_state *s, const uint8_t mac[6]);
+/* Native console EP0 identity requests, independent of the WinUSB PC path. */
+bool pro2_control(const struct pro2_state *s, uint8_t type, uint8_t request,
+                  uint16_t value, uint16_t index, uint16_t requested,
+                  uint8_t reply[64], uint32_t *len);
+/* A response can span two USB packets. */
+unsigned pro2_command(struct pro2_state *s, const uint8_t *data, unsigned len, uint8_t reply[PRO2_REPLY_MAX]);
 void pro2_report(struct pro2_state *s, const struct switch_pro *input, uint32_t us, uint8_t out[64]);
 /* The SDL single-frame 0x5 rumble format is translated to classic DS rumble.
  * Other packed formats are rejected, rather than inventing HD waveforms. */
