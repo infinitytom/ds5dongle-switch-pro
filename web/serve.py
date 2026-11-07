@@ -17,23 +17,49 @@ class LocalServer(ThreadingHTTPServer):
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
         super().server_bind()
 
+def existing_config(url, root):
+    """Reuse only identical UI assets; older tools may still own port 8765."""
+    try:
+        with urllib.request.urlopen(url + '/config.js', timeout=2) as response:
+            config = response.read(262144)
+        if not config.startswith(b'// Byte offsets come from the packed config_body'):
+            return 'foreign'
+    except (OSError, ValueError):
+        return 'foreign'
+    for name in ('config.js', 'dashboard.js', 'dashboard.css', 'index.html'):
+        try:
+            with urllib.request.urlopen(url + '/' + name, timeout=2) as response:
+                if response.read(262144) != (root / name).read_bytes():
+                    return 'outdated'
+        except (OSError, ValueError):
+            return 'outdated'
+    return 'same'
+
+
+def select_server(root, ports=range(8765, 8776)):
+    for port in ports:
+        url = f'http://127.0.0.1:{port}'
+        try:
+            server = LocalServer(('127.0.0.1', port), partial(SimpleHTTPRequestHandler, directory=str(root)))
+            return server, f'http://127.0.0.1:{server.server_port}'
+        except OSError as error:
+            if error.errno not in (errno.EADDRINUSE, 10048) and getattr(error, 'winerror', None) != 10048:
+                raise
+        existing = existing_config(url, root)
+        if existing == 'same':
+            return None, url
+        if existing == 'foreign':
+            raise SystemExit(f'Port {port} is in use by another application. Close it and try again.')
+        # Leave the older DS5 tool running and open this version on a new port.
+    raise SystemExit('No free DS5 configuration port (8765-8775). Close older tools and try again.')
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--no-browser', action='store_true')
     args = parser.parse_args()
-    url = 'http://127.0.0.1:8765'
-    try:
-        server = LocalServer(('127.0.0.1', 8765), partial(SimpleHTTPRequestHandler, directory=str(Path(__file__).parent)))
-    except OSError as error:
-        if error.errno not in (errno.EADDRINUSE, 10048) and getattr(error, 'winerror', None) != 10048:
-            raise
-        try:
-            with urllib.request.urlopen(url + '/config.js', timeout=2) as response:
-                existing = response.read(256).startswith(b'// Byte offsets come from the packed config_body')
-        except (OSError, ValueError):
-            existing = False
-        if not existing:
-            raise SystemExit('Port 8765 is in use by another application. Close it and try again.')
+    server, url = select_server(Path(__file__).parent)
+    if server is None:
         print('DS5 local config is already running: ' + url, flush=True)
         if not args.no_browser:
             webbrowser.open(url)

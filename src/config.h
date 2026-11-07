@@ -19,7 +19,7 @@ struct __attribute__((packed)) config_body {
     uint8_t disable_led;          /* bool */
     uint8_t polling_rate_mode;    /* 0: 250Hz, 1: 500Hz, 2: real-time */
     uint8_t audio_buffer_length;  /* [16,127]   — controller audio buffer depth */
-    uint8_t controller_mode;      /* 0: DS5, 1: DSE, 2: Auto, 3: Pro, 4: Pro+USB mic */
+    uint8_t controller_mode;      /* 0: DS5, 1: DSE, 2: Auto, 3: Pro, 4: Pro+USB mic, 5: Xbox+audio, 6: Pro2 */
     uint8_t enable_usb_sn;        /* bool */
     uint8_t ps_shortcut_enabled;  /* bool */
     uint8_t disable_mic;          /* bool       — disable mic passthrough */

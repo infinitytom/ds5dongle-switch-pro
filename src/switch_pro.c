@@ -181,9 +181,16 @@ unsigned switch_pro_output(struct switch_pro *s, const uint8_t *p, unsigned len,
         if (p[1] == 1) {
             reply[2] = 0; reply[3] = 3;
             for (unsigned i = 0; i < 6; ++i) reply[4+i] = s->mac[5-i];
-        } else if (p[1] == 4) { s->usb_stream = true; return 0; }
-        else if (p[1] == 5) { s->usb_stream = false; s->mode = 0x3f; return 0; }
+        } else if (p[1] == 4 || p[1] == 5) {
+            /* Disable/enable the USB idle timeout, NOT input report mode.
+             * Ryujinx's NpadHdRumble sends 80 05 after SDL selected 0x30.
+             * Downgrading here silently removes its sensor stream while
+             * ordinary buttons continue working through the simple report.
+             * This USB bridge does not emulate the controller idle watchdog. */
+            return 0;
+        }
         else if (p[1] != 2 && p[1] != 3) return 0;
+        if(p[1]==2) s->usb_stream=true;
         return 64;
     }
     if ((p[0] != 1 && p[0] != 0x10) || len < 10) return 0;
@@ -199,7 +206,7 @@ unsigned switch_pro_output(struct switch_pro *s, const uint8_t *p, unsigned len,
         memcpy(reply + 19, s->mac, 6); reply[25] = 1; reply[26] = 1; break;
     case 0x03:
         if (len < 12 || (p[11] != 0x30 && p[11] != 0x3f)) reply[13] = 0;
-        else s->mode = p[11];
+        else { s->mode = p[11];s->usb_stream=true; }
         break;
     case 0x04: reply[13] = 0x83; break;
     case 0x08: case 0x22: case 0x38: break;

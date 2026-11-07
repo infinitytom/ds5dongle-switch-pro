@@ -83,3 +83,39 @@ node tests/browser.cjs  # 本地 8765 服务器需已启动，使用 headless Ed
 - 频率/振幅编码：<https://github.com/dekuNukem/Nintendo_Switch_Reverse_Engineering/blob/master/rumble_data_table.md>
 - DualSense 校准单位：<https://github.com/libsdl-org/SDL/blob/main/src/joystick/hidapi/SDL_hidapi_ps5.c>
 - Switch 2 原装一代 Pro 有线设置：<https://support-jp.nintendo.com/app/answers/detail/a_id/38800/>
+
+
+## alpha.5 / r4：Xbox 360 / XInput
+
+本地测试包在原有 DS / Pro 模式外加入 Xbox 360 / XInput。先为 LCTech BL616 刷入 r4 固件，再启动同版配置工具，选择「Xbox 360 / XInput」，点击「保存并应用」。首次进入该身份时，浏览器可能需要重新授权独立的厂商配置接口。可通过相同接口切回 DS / Pro，无需为切模式重新刷写。
+
+- 模式编号为 5；0–4 保持原有含义，旧配置可直接读取。
+- Windows USB 身份为 045e:028e；XUSB 游戏接口与 WebHID 配置接口相互独立。
+- ×→A、○→B、□→X、△→Y；Create→Back、Options→Start、PS→Guide。
+- 保留模拟 L2/R2、四轴摇杆和左右震动；摇杆 128 为精确零点，覆盖完整 int16 范围，Y 轴按 XInput 方向转换。
+- Xbox 模式无 USB 音频、体感、自适应扳机及键鼠接口；本功能用于电脑 XInput 游戏，不包含 Xbox 主机认证。
+- USB 复位、挂起及断开会发送停止震动；蓝牙断线会提交中性输入，避免主机保留按键。
+- 本轮已完成协议、描述符、网页模拟设备回归与固件构建，尚未验证 Windows 原生 XInput 驱动绑定和真实震动效果。
+
+验收时请检查 Windows 将其识别为 Xbox 360 手柄，逐项检查按键、双摇杆中心与端点、独立扳机、左右震动和停止，再检查 Xbox → DS → Pro → Xbox 的配置回读与重连。
+
+
+## alpha.6 / r5：Xbox 音频与 Pro 2 实验
+
+先自行刷入 r5，使用同版配置工具。旧模式 0–5 保留编号，新 Pro 2 是模式 6。r4 固件不提供音频扩展和 Pro 2，不能只更新网页获得固件能力。
+
+- Xbox：选择「Xbox 360 / XInput」，保存并应用后，Windows 会看到新的复合身份 `1209:DB05`，浏览器首次需要授权其配置接口。音频输出选择 `DS5 Link Xbox + Audio`；四通道中的 1/2 是声音，3/4 是触觉；普通声音可通过「音频转触觉」设置生成反馈。此模式无麦克风。
+- Pro 2：选择「Switch 2 Pro（实验）」。该模式独立实现 HID 和 WinUSB Bulk 命令路径，不是给 Pro+麦克风改名。需要支持 Switch 2 的 SDL/libusb；真实 Windows 驱动、游戏输入与目标主机尚待验收。当前无耳麦音频，震动仅提供 SDL 单帧格式的基础转换，完整 HD Rumble 2 未实现。
+- Switch 主机先尝试原有纯 Pro；Pro+麦克风继续可选，但其复合音频主机兼容性待测。Pro 2 实验代码通过软件夹具不代表 Switch 2 会接受完整初始化。
+- Xbox / PlayStation 主机尚未有已验证的认证路径。请勿将电脑显示的 XInput / DualSense 名称当作主机兼容保证。
+
+完整范围、端点分配、测试边界与验收顺序见 [平台兼容表](COMPATIBILITY_CN.md)。
+
+
+## alpha.8 / r7：龙神体感与 HD 诊断
+
+修复龙神初始化 HD 功能时发送 80 05 导致接收器退回简单报告的问题。请关闭龙神后自行刷入 r7，拔插接收器，重新在龙神控制器设置里选择当前 Pro 设备并保存，再启动游戏。体感和 HD 震动需分别勾选，游戏内体感也需开启。此修复覆盖纯 Pro / Pro+麦克风的共同协议，不把 Pro 2 的实验功能升级为完整 HD Rumble 2。
+
+新版本地页的「连接诊断」提供原始陀螺仪、加速度、应用 IMU 开关、主机震动报告计数和蓝牙发送计数。左/右/双侧 HD 试振只在模式 3/4 和新鲜蓝牙输入下启用，600ms 自动结束，可手动停止，固件上限为 1000ms，不保存配置。离线或旧固件不会启用试振。
+
+旧 r6 已通过 SDL 单独传感器读取和用户确认的短时 HD 效果；r7 仍需刷入后验证喷射战士内体感。详见 [平台兼容与诊断步骤](COMPATIBILITY_CN.md)。

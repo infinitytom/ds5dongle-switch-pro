@@ -53,6 +53,9 @@ static __attribute__((aligned(8))) uint8_t decoder_mem[OPUS_DEC_MAX_SIZE];
 static OpusEncoder  *encoder;
 static OpusDecoder  *decoder;
 static uint8_t  packet_counter;
+static volatile uint32_t haptic_packets_sent, haptic_packets_failed;
+uint32_t audio_haptic_packets_sent(void) { return haptic_packets_sent; }
+uint32_t audio_haptic_packets_failed(void) { return haptic_packets_failed; }
 static volatile bool plug_headset;
 static volatile bool mic_enabled;   /* host opened mic interface AND config allows */
 static volatile bool mic_status_pending;  /* deferred: send 0x32 to controller */
@@ -305,7 +308,7 @@ static int send_audio_report(void)
     memcpy(pkt + 12 + HAPTIC_BUF_SIZE, haptic_slots[1], HAPTIC_BUF_SIZE);
 
     /* Speaker Opus (tag 0xD3/0xD6, 2x 200-byte blocks) */
-    bool speaker_enabled = !usb_gamepad_switch_mode() && !config_get()->disable_speaker;
+    bool speaker_enabled = !usb_gamepad_switch_mode() && !usb_gamepad_pro2_mode() && !config_get()->disable_speaker;
     if (speaker_enabled) {
         pkt[140] = plug_headset ? DS5_AUDIO_TAG_HEADSET : DS5_AUDIO_TAG_SPEAKER;
         pkt[141] = OPUS_OUT_SIZE;
@@ -320,6 +323,7 @@ static int send_audio_report(void)
 
     static uint32_t fail_log_count = 0;
     int ret = bt_hid_host_send_output(pkt, DS5_BT_AUDIO_REPORT_SIZE);
+    if(ret) ++haptic_packets_failed; else ++haptic_packets_sent;
     if (ret) {
         fail_log_count++;
         if (fail_log_count <= 3 || (fail_log_count % 100) == 0)
@@ -497,6 +501,10 @@ void audio_task(void *arg)
         if (mic_status_pending && bt_hid_host_get_state() == BT_HID_STATE_CONNECTED) {
             mic_status_pending = false;
             send_mic_status();
+        }
+        if (usb_gamepad_pro2_mode()) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
         }
         if (usb_gamepad_switch_mode()) {
             uint64_t now = bflb_mtimer_get_time_us();

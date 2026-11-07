@@ -1,7 +1,7 @@
 // Byte offsets come from the packed config_body in src/config.h (version 2).
 export const fields = [
  ['haptics_gain','触觉强度',1,1,2,.05,'float'],
- ['controller_mode','USB 输出模式',12,0,4,1,['DualSense','DualSense Edge','自动识别 DS / Edge','Switch Pro','Switch Pro + USB 麦克风（实验）']],
+ ['controller_mode','USB 输出模式',12,0,6,1,['DualSense','DualSense Edge','自动识别 DS / Edge','Switch Pro','Switch Pro + USB 麦克风（实验）','Xbox 360 / XInput','Switch 2 Pro（实验，无耳麦音频）']],
  ['polling_rate_mode','DS 模式上报率',10,0,2,1,['250 Hz','500 Hz','实时']],
  ['inactive_time','空闲断开（分钟，0 为关闭）',8,0,60],
  ['speaker_volume','扬声器音量',5,0,127],['headset_volume','耳机音量',6,0,127],
@@ -17,7 +17,7 @@ export const fields = [
  ['tp_mode','触摸板模式（DS 模式）',25,0,4,1,['关闭','方向键','左鼠标 / 右方向','左方向 / 右鼠标','分区']],
  ['tp_mode_enabled_mask','触摸板可轮换模式位掩码',26,1,31],
  ['tp_mouse_sensitivity','触摸板鼠标灵敏度',27,1,32],
- ['audio_haptic','音频转触觉（DS 模式）',28,0,2,1,['关闭','自动（游戏优先）','强制']]
+ ['audio_haptic','音频转触觉（DS / Xbox）',28,0,2,1,['关闭','自动（游戏优先）','强制']]
 ];
 export function decode(bytes) {
  if (bytes.length < 29 || bytes[0] !== 2) throw Error('配置布局不受支持：需要 version 2、至少 29 字节；未写入设备。');
@@ -54,4 +54,13 @@ export function decodeStatus(bytes) {
      replies:v.getUint32(47,true),capabilities:bytes[51],saveStatus:bytes[52]});
  }
  return result;
+}
+
+export function decodeMotionStatus(bytes) {
+ if(bytes.length<63||bytes[0]!==0xa8||bytes[1]!==1)throw Error('体感诊断报告不受支持，请更新到 r7 固件。');
+ const v=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),flags=bytes[2];
+ return {connected:!!(flags&1),imuEnabled:!!(flags&2),vibrationEnabled:!!(flags&4),testActive:!!(flags&8),fresh:!!(flags&16),fullReport:!!(flags&32),
+   reportMode:bytes[3],testPattern:bytes[4],raw:Array.from({length:6},(_,i)=>v.getInt16(5+i*2,true)),native:Array.from({length:6},(_,i)=>v.getInt16(17+i*2,true)),
+   inputAge:v.getUint32(29,true),rumblePackets:v.getUint32(33,true),btPackets:v.getUint32(37,true),rumbleAge:v.getUint32(41,true),
+   btFailures:v.getUint32(45,true),samples:v.getUint32(49,true),testRequests:v.getUint32(53,true),commands:v.getUint32(57,true),remaining:v.getUint16(61,true)};
 }

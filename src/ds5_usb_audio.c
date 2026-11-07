@@ -1,6 +1,7 @@
 #include "ds5_usb_audio.h"
 #include "audio.h"
 #include "state_mgr.h"
+#include "usb_gamepad.h"
 #include "usbd_core.h"
 #include "usbd_audio.h"
 #include "FreeRTOS.h"
@@ -307,6 +308,7 @@ void usbd_audio_open(uint8_t busid, uint8_t intf)
     if (!pro_mic_only && intf == USB_AUDIO_INTF_STREAM) {
         LOG_INF("[AUDIO] Speaker stream opened\n");
         stream_active = true;
+        usb_gamepad_audio_stream_changed(true);
         pcm_write_pos = 0;
         pcm_write_idx = 0;
         pcm_ready = false;
@@ -330,6 +332,7 @@ void usbd_audio_close(uint8_t busid, uint8_t intf)
         usbd_ep_close(busid, USB_AUDIO_EP_OUT);
         LOG_INF("[AUDIO] Speaker stream closed\n");
         stream_active = false;
+        usb_gamepad_audio_stream_changed(false);
         audio_reset_encoder();
         state_mgr_set_spk_active(false);
     } else if (intf == USB_AUDIO_INTF_MIC) {
@@ -427,6 +430,21 @@ void usb_audio_register_pro_mic(uint8_t busid)
     audio_mic_ep.ep_cb = audio_mic_ep_in_handler;
     usbd_add_endpoint(busid, &audio_mic_ep);
 }
+
+void usb_audio_register_xbox_playback(uint8_t busid)
+{
+    pro_mic_only=false;
+    usb_audio_early_init();
+    usbd_add_interface(busid, usbd_audio_init_intf(busid, &audio_intf_ctrl,
+        0x0100, &entity_table[0], 1));
+    usbd_add_interface(busid, usbd_audio_init_intf(busid, &audio_intf_stream,
+        0x0100, &entity_table[0], 1));
+    audio_out_ep.ep_addr=USB_AUDIO_EP_OUT;
+    audio_out_ep.ep_cb=audio_ep_out_handler;
+    usbd_add_endpoint(busid, &audio_out_ep);
+}
+
+bool usb_audio_stream_open(void) { return stream_active; }
 
 const uint8_t *usb_audio_get_desc(uint16_t *len)
 {

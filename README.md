@@ -1,6 +1,6 @@
 # DS5 Dongle · Switch Pro
 
-让 DualSense / DualSense Edge 通过 **LCTech BL616 接收器**连接主机，并在 DualSense 与 Switch Pro USB 模式之间切换。
+让 DualSense / DualSense Edge 通过 **LCTech BL616 接收器**连接主机，并在 DualSense、Xbox 360 / XInput 与 Switch Pro USB 模式之间切换。
 
 基于 [sqlCRT/ds5dongle-bl618-opensource](https://github.com/sqlCRT/ds5dongle-bl618-opensource) 的实验性扩展，新增 Switch Pro 协议、HD 震动波形转译和完全离线的本地配置页。保留上游历史与 GPL-3.0 许可。
 
@@ -18,7 +18,7 @@
 
 启用 Switch Pro 需刷入 **alpha.3 或更新固件**，再在配置页选择 **Switch Pro → 保存并应用**。页面等待闪存确认后会自动重启接收器、尝试重新连接；浏览器首次见到新 USB 身份时，按提示授权。主机端需开启「Pro 手柄的有线通信」，通过底座 USB 接入。Pro 模式保留本地配置接口，可以切回 DualSense 模式。
 
-详细步骤：[中文使用说明](docs/SWITCH_PRO_CN.md) · [验证记录](docs/VALIDATION.md) · [上游说明](README_UPSTREAM.md)
+兼容进度：[平台兼容表](docs/COMPATIBILITY_CN.md)；详细步骤：[中文使用说明](docs/SWITCH_PRO_CN.md) · [验证记录](docs/VALIDATION.md) · [上游说明](README_UPSTREAM.md)
 
 `v0.1.0-alpha.2` 是启动器编码补丁；`alpha.3` 包含 USB 固件修复，需更新配置包并刷入新固件。
 
@@ -26,11 +26,19 @@
 
 **alpha.4** 进一步将 Pro 模式的网页设备选择限定到厂商配置接口（Usage Page `0xFF00`），避免误选到不能读配置的游戏手柄接口。其固件与 alpha.3 相同，版本标记仍为 `Pro-dev1 r3`。
 
+**alpha.5 / r4 本地测试版**：恢复 Xbox 360 / XInput 输出（模式 5），保留旧模式编号和配置布局。提供模拟扳机、双摇杆、A/B/X/Y、Guide 与双马达震动；独立厂商 HID 接口用于网页配置及切回其他模式。Xbox 模式不提供音频、体感、自适应扳机或 Xbox 主机认证。需要刷入 r4 固件并使用同版配置页；r3 固件会被页面阻止写入模式 5。本轮完成软件验证，尚未刷写和验证 Xbox 实机效果。
+
+**alpha.6 / r5 本地测试版**：模式 5 补上 XInput 与四通道 USB 音频/触觉并存，使用复合设备测试身份 `1209:DB05`；保留 r4 身份的网页连接兼容。新增独立的 **Switch 2 Pro 实验模式 6**，包含 SDL 风格初始化、输入、体感与单帧基础震动转换，未提供耳麦音频或完整 HD Rumble 2。现有 Pro+麦克风保持模式 4。模式与主机兼容不是一回事，详见[平台兼容表](docs/COMPATIBILITY_CN.md)。本轮不承诺 PS / Xbox 主机认证或 Switch 2 主机原生支持。
+
+**alpha.7 / r6**：本地控制台文字、按钮和状态数字加大加粗；修复 Pro 2 默认 `0x09` 的逐键位序、HID 按钮索引和浏览器四轴布局，`0x05` 保留原 Nintendo 坐标约定。更新页面即可使用新界面，Pro 2 修复需要重新刷入 r6。刷后拔插接收器并刷新测试网站；本轮没有自动刷写或主机实测。
+
+**alpha.8 / r7（龙神体感修复）**：已在 r6 实机复现龙神 HD 初始化的 `80 05` 被错误解释为退出完整报告，从 `0x30` 变成不含 IMU 的 `0x3F`。r7 保留完整报告和 IMU 状态，并新增连接诊断页的实时体感与限时 HD 试振。此修复适用于纯 Pro / Pro+麦克风；Pro 2 继续为实验协议，不代表完整 HD Rumble 2。需要刷入 r7，重新在龙神选择当前 SDL 设备后进游戏验证，不能只更新网页。
+
 ## 当前功能
 
 | 功能 | 实现与限制 |
 |---|---|
-| USB 模式 | DualSense / Edge / 自动、Switch Pro、Pro + USB 麦克风（057e:2009） |
+| USB 模式 | DualSense / Edge / 自动、Xbox+音频（1209:db05）、Switch Pro、Pro+麦克风（057e:2009）、Pro 2 实验（057e:2069） |
 | 按键与摇杆 | Switch Pro 12 位摇杆、方向键、HOME、Capture、电量；两组按键映射 |
 | 体感 | 双方 IMU 单位与坐标系转换、DualSense 工厂校准、Pro 量程设置；每报告重复当前样本三次 |
 | HD 震动 | 左右高低频参数解码 → 连续相位 3 kHz 波形 → 上游 DualSense 蓝牙触觉通道 |
@@ -43,6 +51,8 @@
 当前只支持传统 Switch Pro 的 4 字节/通道震动编码。模拟器必须输出完整 HD 震动参数；普通强弱震动后端无法恢复原始 HD 细节。DualSense 与 Nintendo 执行器的物理差异仍需调校。
 
 不提供 NFC/amiibo、红外、无线连接 Switch、主机唤醒、Switch 2 Pro 的 C/GL/GR 按键或 HD Rumble 2。纯 Pro 不暴露音频接口；Pro + USB 麦克风模式只增加音频输入。需要扬声器、耳机输出、自适应扳机和键鼠功能时请使用 DS/Edge 模式。独立 USB 麦克风的 Switch 2 兼容性尚未验证，它不是对 Switch 2 Pro 私有音频传输的实现。
+
+协议参考：[DS5_Bridge Xbox 实现](https://github.com/SundayMoments/DS5_Bridge/tree/main/src/persona)。本分支使用独立 C 实现与 CherryUSB 传输层。
 
 ## 构建和测试
 
@@ -82,3 +92,6 @@ Windows 可运行 `tests\run-native.cmd`（Visual Studio C++ Build Tools）。�
 ---
 
 **English:** Experimental DualSense-to-Switch-Pro USB bridge for the LCTech BL616, with offline WebHID configuration and frequency-preserving haptic synthesis. Windows hardware tests pass for USB handshakes, SDL3 gamepad opening and microphone capture; full input, motion, haptics and Switch console compatibility remain unverified. This is an unofficial GPL-3.0 fork; upstream attribution is preserved.
+
+
+本地生成包含准确源码快照的测试包（不提交、不发布、不刷写）：`py -3 tools/package_release.py --local-preview`。正式打包仍要求工作区已提交。

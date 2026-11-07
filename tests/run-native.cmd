@@ -14,3 +14,15 @@ if errorlevel 1 exit /b 1
 cl /nologo /W4 /WX /std:c11 /Isrc tests\switch_pro_test.c src\switch_pro.c src\switch_usb.c /Fo:build-tests\ /Fe:build-tests\switch_pro_test.exe
 if errorlevel 1 exit /b 1
 build-tests\switch_pro_test.exe
+if errorlevel 1 exit /b 1
+cl /nologo /W4 /WX /std:c11 /Isrc tests\xbox_test.c src\xbox.c /Fo:build-tests\ /Fe:build-tests\xbox_test.exe
+if errorlevel 1 exit /b 1
+build-tests\xbox_test.exe
+if errorlevel 1 exit /b 1
+cl /nologo /W4 /WX /std:c11 /Isrc tests\pro2_test.c src\pro2.c src\xbox.c src\switch_pro.c /Fo:build-tests\ /Fe:build-tests\pro2_test.exe
+if errorlevel 1 exit /b 1
+build-tests\pro2_test.exe
+if errorlevel 1 exit /b 1
+cl /nologo /W4 /WX /std:c11 /Isrc tests\switch_test_test.c src\switch_test.c src\switch_pro.c /Fo:build-tests\ /Fe:build-tests\switch_test_test.exe
+if errorlevel 1 exit /b 1
+build-tests\switch_test_test.exe

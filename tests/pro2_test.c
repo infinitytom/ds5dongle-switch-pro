@@ -1,0 +1,134 @@
+#include "pro2.h"
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+static int get16(const uint8_t *p) { return (int16_t)(p[0]|p[1]<<8); }
+static unsigned get32(const uint8_t *p) { return p[0]|(unsigned)p[1]<<8|(unsigned)p[2]<<16|(unsigned)p[3]<<24; }
+static unsigned command(struct pro2_state *s,uint8_t cmd,uint8_t sub,uint8_t payload,uint8_t out[80])
+{
+    uint8_t p[16]={0};p[0]=cmd;p[1]=0x91;p[3]=sub;p[5]=4;p[8]=payload;
+    return pro2_command(s,p,12,out);
+}
+int main(void)
+{
+    struct pro2_state s;struct switch_pro in;uint8_t reply[80],report[64];
+    const uint8_t mac[6]={2,3,4,5,6,7};switch_pro_init(&in,mac);pro2_init(&s);
+    assert(s.mode==9 && s.streaming);
+    /* Independent HID Usage 1..21 expectations, one physical key at a time.
+     * Testing only 0x05 missed the old default 0x09 / Pro-1 layout mismatch. */
+    const struct {unsigned byte, mask, usage;} buttons[]={
+        {7,0x20,1},{7,0x40,2},{7,0x10,3},{7,0x80,4},
+        {8,2,5},{8,8,6},{8,0x20,7},{8,0x80,8},
+        {8,1,13},{8,4,14},{8,0x10,15},{8,0x40,16},
+        {9,1,17},{9,2,18},{9,4,21}
+    };
+    for(unsigned k=0;k<sizeof(buttons)/sizeof(buttons[0]);k++) {
+        uint8_t ds[63]={128,128,128,128};ds[7]=8;
+        ds[buttons[k].byte]|=(uint8_t)buttons[k].mask;
+        switch_pro_input(&in,ds);pro2_report(&s,&in,4000,report);
+        unsigned actual=report[3]|(unsigned)report[4]<<8|(unsigned)report[5]<<16;
+        assert(report[0]==9 && actual==(1u<<(buttons[k].usage-1)));
+        assert(report[6]==0 && report[7]==8 && report[8]==128);
+        for(unsigned i=13;i<64;i++) assert(report[i]==0);
+    }
+    const unsigned dpad9[]={8,10,2,3,1,5,4,12,0,0,0,0,0,0,0,0};
+    for(unsigned h=0;h<16;h++) {
+        uint8_t ds[63]={128,128,128,128};ds[7]=(uint8_t)h;
+        switch_pro_input(&in,ds);pro2_report(&s,&in,4000,report);
+        assert(report[3]==0 && report[4]==dpad9[h] && report[5]==0);
+    }
+    switch_pro_init(&in,mac);
+    for(unsigned a=0;a<4;a++) for(unsigned v=0;v<256;v++) {
+        uint8_t ds[63]={128,128,128,128};ds[7]=8;ds[a]=(uint8_t)v;
+        switch_pro_input(&in,ds);pro2_report(&s,&in,4000,report);
+        const uint8_t *p=report+6+(a/2)*3;
+        unsigned actual=(a&1)?(p[1]>>4)|(unsigned)p[2]<<4:p[0]|(unsigned)(p[1]&15)<<8;
+        unsigned expected=v<=128?v*16:2048+(v-128)*2047/127;
+        assert(actual==expected); /* Browser 0x09: up=0, center=2048, down=4095. */
+    }
+    switch_pro_init(&in,mac);
+    /* Parse the actual HID descriptor, then apply Chromium's Usage N ->
+     * buttons[N-1] rule used by the reported external tester. */
+    uint16_t descriptor_len;const uint8_t *descriptor=pro2_hid_descriptor(&descriptor_len);
+    unsigned page=0,id=0,count=0,usages[32]={0},used=0,wire_to_usage[21]={0},axis_usages[4]={0};
+    for(unsigned i=0;i<descriptor_len;) {
+        uint8_t key=descriptor[i++];unsigned size=key&3;if(size==3)size=4;
+        assert(i+size<=descriptor_len);unsigned value=0;
+        for(unsigned b=0;b<size;b++)value|=(unsigned)descriptor[i+b]<<(8*b);
+        i+=size;
+        if(key==5||key==6)page=value;
+        if(key==0x85)id=value;
+        if(key==0x95)count=value;
+        if(key==9 && used<32)usages[used++]=value;
+        if((key&0xfc)==0x80 && page==9 && id==9 && !(value&1)) {
+            assert(count==21 && used==21);memcpy(wire_to_usage,usages,sizeof(wire_to_usage));
+        }
+        if((key&0xfc)==0x80 && page==1 && id==9 && !(value&1)) {
+            assert(count==4 && used==4);memcpy(axis_usages,usages,sizeof(axis_usages));
+        }
+        if((key&12)==0)used=0; /* HID local usages clear after a Main item. */
+    }
+    const unsigned browser_buttons[]={0,1,2,3,5,7,9,11,13,15,14,12,4,6,8,10,16,17,19,20,18};
+    for(unsigned b=0;b<21;b++)assert(wire_to_usage[b]==browser_buttons[b]+1);
+    for(unsigned a=0;a<4;a++)assert(axis_usages[a]==0x30+a);
+    for(unsigned hs=0;hs<2;hs++) for(unsigned other=0;other<2;other++) {
+        const uint8_t *d=pro2_config_descriptor(hs!=0,other!=0);assert(d[1]==(other?7:2)&&d[2]==64&&d[4]==2);
+        unsigned seen=0,endpoints=0;uint16_t hidlen;pro2_hid_descriptor(&hidlen);
+        for(unsigned i=9;i<64;i+=d[i]) {
+            assert(d[i]>=2 && i+d[i]<=64);
+            if(d[i+1]==5) {
+                unsigned num=d[i+2]&15;assert(num>=1&&num<=4&&!(seen&(1u<<num)));seen|=1u<<num;endpoints++;
+                if(d[i+3]==2) assert((d[i+4]|d[i+5]<<8)==(hs?512:64));
+            }
+            if(d[i+1]==0x21) assert((d[i+7]|d[i+8]<<8)==hidlen);
+        }
+        assert(endpoints==4 && seen==30);
+    }
+    assert(pro2_compat_id[16]==1&&!memcmp(pro2_compat_id+18,"WINUSB",6));
+    const uint8_t *os=pro2_os_properties();assert(get32(os)==146 && os[8]==1 && get32(os+10)==136 && get32(os+14)==7);
+    assert(get32(os+62)==80 && os[66]=='{' && os[140]=='}' && os[142]==0 && os[144]==0);
+    /* Replay the exact shape of SDL's 7 calibration reads and init commands. */
+    const unsigned blocks[]={0x13000,0x13040,0x13080,0x130c0,0x13100,0x1fc040,0x1fc080};
+    for(unsigned b=0;b<7;b++) {
+        uint8_t p[16]={2,0x91,0x35,1,0,8};
+        for(unsigned j=0;j<4;j++) p[12+j]=(uint8_t)(blocks[b]>>(8*j));
+        assert(pro2_command(&s,p,16,reply)==80);
+        assert(reply[1]==1&&reply[2]==0x35&&get32(reply+12)==blocks[b]&&reply[8]==64);
+        if(b==0) assert(!memcmp(reply+18,"DS5-PRO2-00000000",16));
+        if(b==2||b==3) assert(reply[56]==0&&reply[57]==8&&reply[58]==128);
+    }
+    assert(command(&s,0x0c,2,0x27,reply)==12);
+    assert(command(&s,0x0c,4,0x27,reply)==12 && s.features==0x27);
+    assert(command(&s,3,10,5,reply)==8 && s.mode==5);
+    uint8_t start[16]={3,0x91,0,13,0,8,0,0,1};
+    assert(pro2_command(&s,start,16,reply)==12 && s.streaming);
+    pro2_report(&s,&in,4000,report);assert(report[0]==5 && get32(report+43)==4000);
+    assert(report[11]==0 && report[12]==8 && report[13]==128);
+    assert(report[5]==0 && report[6]==0 && report[7]==0);
+    in.ds[7]=0xf1;in.ds[8]=0xff;in.ds[9]=7;
+    pro2_report(&s,&in,8000,report);assert(report[5]==0xcf && report[6]==0x7f && report[7]==0xc6);
+    /* +1g DS X -> +1g SDL X. DS Z and Y rotate into raw Y and Z. */
+    memset(in.ds+15,0,12);in.ds[22]=0x20;in.ds[24]=0x10;in.ds[26]=0xf0;
+    pro2_report(&s,&in,12000,report);assert(get16(report+49)==4096 && get16(report+51)==2048 && get16(report+53)==2048);
+    uint8_t p[64]={2,0x50};p[17]=0x50;
+    uint8_t ds[48];assert(pro2_rumble(&s,p,64,ds)&&ds[1]==1&&ds[3]==0&&ds[4]==0);
+    /* Low-band amplitude 14500 on left, zero on right. */
+    p[5]=(uint8_t)(14500&0xc0);p[6]=(uint8_t)(14500>>8);
+    assert(pro2_rumble(&s,p,64,ds));assert(ds[4]>=126&&ds[4]<=127&&ds[3]==0&&ds[39]==4);
+    p[1]=0x40;assert(!pro2_rumble(&s,p,64,ds));
+    struct pro2_state before=s;
+    uint8_t malformed[64]={0x0c,0x91,0,4,0,4,0,0,0x27};
+    for(unsigned n=0;n<=64;n++) if(n!=12) {
+        assert(pro2_command(&s,malformed,n,reply)==0);assert(!memcmp(&s,&before,sizeof(s)));
+    }
+    malformed[0]=0xff;assert(!pro2_command(&s,malformed,12,reply));
+    assert(command(&s,0x0c,5,0x20,reply)==12 && !(s.features&0x20));
+    p[1]=0x50;assert(!pro2_rumble(&s,p,64,ds));
+    assert(command(&s,0x0c,5,7,reply)==12);
+    pro2_report(&s,&in,16000,report);
+    assert(report[5]==0&&report[6]==0&&report[7]==0&&get32(report+43)==0);
+    assert(report[11]==0 && report[12]==8 && report[13]==128);
+    for(unsigned n=0;n<=64;n++) { uint8_t fuzz[64];memset(fuzz,0xff,sizeof(fuzz));pro2_command(&s,fuzz,n,reply);pro2_rumble(&s,fuzz,n,ds); }
+    puts("Pro2: SDL-style initialization, calibration, input, IMU units, rumble fallback, malformed commands and USB/WinUSB descriptors passed.");
+    return 0;
+}

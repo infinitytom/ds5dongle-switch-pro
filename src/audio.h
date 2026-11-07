@@ -55,6 +55,8 @@ void audio_set_mic_active(bool active);
 bool audio_mic_active(void);
 uint32_t audio_mic_frame_count(void);
 uint16_t audio_mic_peak(void);
+uint32_t audio_haptic_packets_sent(void);
+uint32_t audio_haptic_packets_failed(void);
 
 /**
  * Mic decode task entry point (FreeRTOS).

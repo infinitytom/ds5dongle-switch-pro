@@ -36,6 +36,8 @@
  */
 void usb_audio_early_init(void);
 void usb_audio_register(uint8_t busid);
+void usb_audio_register_xbox_playback(uint8_t busid);
+bool usb_audio_stream_open(void);
 /* Register AC+AS mic after the Pro HID interface (interfaces 1 and 2). */
 void usb_audio_register_pro_mic(uint8_t busid);
 

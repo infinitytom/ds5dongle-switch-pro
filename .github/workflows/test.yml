@@ -31,6 +31,12 @@ jobs:
           mkdir -p build-tests
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -g -Isrc tests/switch_pro_test.c src/switch_pro.c src/switch_usb.c -lm -o build-tests/switch-pro-test
           ./build-tests/switch-pro-test
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -g -Isrc tests/xbox_test.c src/xbox.c -o build-tests/xbox-test
+          ./build-tests/xbox-test
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -g -Isrc tests/pro2_test.c src/pro2.c src/xbox.c src/switch_pro.c -lm -o build-tests/pro2-test
+          ./build-tests/pro2-test
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -g -Isrc tests/switch_test_test.c src/switch_test.c src/switch_pro.c -lm -o build-tests/switch-test
+          ./build-tests/switch-test
       - run: npm ci
       - run: npm test
       - run: python3 tests/server.test.py

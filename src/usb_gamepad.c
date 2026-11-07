@@ -9,6 +9,7 @@
 #include "state_mgr.h"
 #include "remap.h"
 #include "usbd_core.h"
+#include "usb_dc.h"
 #include "usbd_hid.h"
 #include "bl616_glb.h"
 #include "bflb_efuse.h"
@@ -22,15 +23,35 @@
 #include "queue.h"
 #include "switch_pro.h"
 #include "switch_usb.h"
+#include "xbox.h"
+#include "pro2.h"
+#include "switch_test.h"
 
 /* Latched at enumeration: changing saved settings requires a reboot. */
 static bool current_switch_mode;
 static bool current_switch_mic;
+static bool current_xbox_mode;
+static bool current_pro2_mode;
+static struct pro2_state pro2;
+static struct usbd_interface pro2_bulk_intf;
+static struct usbd_endpoint pro2_bulk_out_ep, pro2_bulk_in_ep;
+static USB_NOCACHE_RAM_SECTION uint8_t pro2_bulk_out[512], pro2_bulk_reply[80];
+static volatile unsigned pro2_reply_len, pro2_reply_offset;
+static volatile bool pro2_bulk_busy;
+static struct usbd_interface xbox_intf;
+static struct usbd_endpoint xbox_config_ep;
+static uint8_t xbox_rumble[8]={0,8};
 static uint8_t current_usb_mode;
 static volatile uint32_t pro_output_count;
 static volatile uint32_t input_sent_count;
 static volatile uint32_t pro_reply_count;
 static volatile uint32_t controller_input_ms;
+static volatile uint32_t sensor_samples, host_rumble_packets, host_rumble_ms, local_test_requests;
+static struct switch_test local_test;
+static volatile bool local_test_pending;
+static volatile uint8_t local_test_pattern;
+static volatile uint16_t local_test_duration;
+static volatile uint32_t local_test_generation, local_test_epoch;
 /* 0=dirty/unknown, 1=pending, 2=flash saved, 3=flash save failed. */
 static volatile uint8_t config_save_status;
 static volatile bool usb_configured = false;
@@ -54,9 +75,19 @@ static uint8_t pro_replies[16][64];
 static volatile unsigned pro_reply_head, pro_reply_tail;
 
 bool usb_gamepad_switch_mode(void) { return current_switch_mode; }
+bool usb_gamepad_xbox_mode(void) { return current_xbox_mode; }
+bool usb_gamepad_pro2_mode(void) { return current_pro2_mode; }
 void usb_gamepad_on_bt_disconnect(void)
 {
-    if (!current_switch_mode) return;
+    local_test.pattern=0;local_test_pending=false;++local_test_epoch;
+    if (current_xbox_mode) {
+        uint8_t neutral[63] = {0};
+        neutral[0]=neutral[1]=neutral[2]=neutral[3]=128; neutral[7]=8;
+        usb_gamepad_send_raw_input(neutral);
+        controller_input_ms=0;
+        return;
+    }
+    if (!current_switch_mode && !current_pro2_mode) return;
     taskENTER_CRITICAL();
     switch_pro_disconnect(&pro);
     taskEXIT_CRITICAL();
@@ -67,6 +98,7 @@ void usb_gamepad_switch_render(uint32_t ms, float gain, int8_t *stereo, unsigned
     struct switch_pro snapshot;
     taskENTER_CRITICAL();
     snapshot = pro;
+    if(switch_test_active(&local_test,ms)) { snapshot=local_test.player;snapshot.rumble_ms=ms; }
     if (!usb_configured || pro_reset_pending) snapshot.vibration = false;
     taskEXIT_CRITICAL();
     for (unsigned c=0;c<2;c++) memcpy(snapshot.motor[c].phase, phases[c], sizeof(phases[c]));
@@ -84,12 +116,42 @@ static void pro_receive_isr(const uint8_t *data, uint32_t len)
     memcpy(item.bytes, packet, 64); item.len = len;
     item.generation = pro_generation;
     ++pro_output_count;
+    if(len>=10 && data[0]==0x10) { ++host_rumble_packets;host_rumble_ms=(uint32_t)(bflb_mtimer_get_time_us()/1000); }
     xQueueSendFromISR(pro_output_queue, &item, NULL);
 }
+static void xbox_receive_isr(const uint8_t *data, uint32_t len);
+static void pro2_receive_rumble_isr(const uint8_t *data, uint32_t len);
+static void xbox_stop_rumble_isr(void);
 static void pro_out_handler(uint8_t busid, uint8_t ep, uint32_t nbytes)
 {
-    pro_receive_isr(pro_out_buf, nbytes);
-    usbd_ep_start_read(busid, ep, pro_out_buf, sizeof(pro_out_buf));
+    if (current_xbox_mode) xbox_receive_isr(pro_out_buf, nbytes);
+    else if (current_pro2_mode) pro2_receive_rumble_isr(pro_out_buf, nbytes);
+    else pro_receive_isr(pro_out_buf, nbytes);
+    usbd_ep_start_read(busid, ep, pro_out_buf, current_xbox_mode ? 32 : sizeof(pro_out_buf));
+}
+static void pro2_bulk_try_send(void)
+{
+    if (!usb_configured || pro2_bulk_busy || pro2_reply_offset>=pro2_reply_len) return;
+    unsigned n=pro2_reply_len-pro2_reply_offset;
+    if(n>64) n=64;
+    pro2_bulk_busy=true;
+    if(usbd_ep_start_write(0,PRO2_BULK_IN,pro2_bulk_reply+pro2_reply_offset,n)<0) pro2_bulk_busy=false;
+}
+static void pro2_bulk_in_handler(uint8_t busid,uint8_t ep,uint32_t nbytes)
+{
+    (void)busid;(void)ep;
+    pro2_reply_offset+=nbytes;
+    if(pro2_reply_len && pro2_reply_offset>=pro2_reply_len) ++pro_reply_count;
+    pro2_bulk_busy=false;pro2_bulk_try_send();
+}
+static void pro2_bulk_out_handler(uint8_t busid,uint8_t ep,uint32_t nbytes)
+{
+    if(nbytes==12 && pro2_bulk_out[0]==0x0c && pro2_bulk_out[1]==0x91 &&
+       pro2_bulk_out[5]==4 && !pro2_bulk_out[6] && !pro2_bulk_out[7] &&
+       (pro2_bulk_out[3]==3 || (pro2_bulk_out[3]==5 && (pro2_bulk_out[8]&0x20))))
+        xbox_stop_rumble_isr();
+    pro_receive_isr(pro2_bulk_out,nbytes);
+    usbd_ep_start_read(busid,ep,pro2_bulk_out,usbd_get_port_speed(busid)==USB_SPEED_HIGH?512:64);
 }
 
 #if defined(BOARD_LCTECH_616)
@@ -575,9 +637,11 @@ static const uint8_t *desc_device_cb(uint8_t speed)
 static const uint8_t *desc_config_cb(uint8_t speed)
 {
     (void)speed;
+    if (current_pro2_mode) return pro2_config_descriptor(speed == USB_SPEED_HIGH,false);
     if (current_switch_mode) {
         return switch_usb_config_descriptor(current_switch_mic, speed == USB_SPEED_HIGH, false, NULL);
     }
+    if (current_xbox_mode) return xbox_config_descriptor(speed == USB_SPEED_HIGH, false);
     return config_desc;
 }
 
@@ -601,9 +665,11 @@ static uint8_t other_speed_desc[USB_HID_CONFIG_SIZE];
 static const uint8_t *desc_other_speed_cb(uint8_t speed)
 {
     (void)speed;
+    if (current_pro2_mode) return pro2_config_descriptor(speed != USB_SPEED_HIGH,true);
     if (current_switch_mode) {
         return switch_usb_config_descriptor(current_switch_mic, speed != USB_SPEED_HIGH, true, NULL);
     }
+    if (current_xbox_mode) return xbox_config_descriptor(speed != USB_SPEED_HIGH, true);
     memcpy(other_speed_desc, config_desc, sizeof(other_speed_desc));
     other_speed_desc[1] = 0x07;
     uint16_t total = other_speed_desc[2] | (other_speed_desc[3] << 8);
@@ -630,8 +696,12 @@ static const char *desc_string_cb(uint8_t speed, uint8_t index)
     (void)speed;
     switch (index) {
     case 0: return "\x09\x04";
-    case 1: return current_switch_mode ? "Nintendo Co., Ltd." : "Sony Interactive Entertainment";
-    case 2: return current_switch_mode ? "Pro Controller" : current_dse_mode
+    case 1: if (current_pro2_mode) return "Nintendo Co., Ltd.";
+        if (current_xbox_mode) return "DS5 Link";
+        return current_switch_mode ? "Nintendo Co., Ltd." : "Sony Interactive Entertainment";
+    case 2: if (current_pro2_mode) return "Switch 2 Pro Controller";
+        if (current_xbox_mode) return "DS5 Link Xbox + Audio";
+        return current_switch_mode ? "Pro Controller" : current_dse_mode
                  ? "DualSense Edge Wireless Controller"
                  : "DualSense Wireless Controller";
     case 3:
@@ -671,7 +741,15 @@ static const struct usb_bos_descriptor bos_desc = {
     .string_len = sizeof(bos_desc_raw),
 };
 
-static const struct usb_descriptor usb_desc = {
+static const struct usb_msosv1_descriptor xbox_msos = {
+    .string=xbox_os_string, .vendor_code=0x20, .compat_id=xbox_compat_id,
+};
+static const uint8_t *pro2_property_table[2];
+static const struct usb_msosv1_descriptor pro2_msos = {
+    .string=xbox_os_string,.vendor_code=0x20,.compat_id=pro2_compat_id,
+    .comp_id_property=pro2_property_table,.comp_id_property_count=2,
+};
+static struct usb_descriptor usb_desc = {
     .device_descriptor_callback          = desc_device_cb,
     .config_descriptor_callback          = desc_config_cb,
     .device_quality_descriptor_callback  = desc_qualifier_cb,
@@ -698,6 +776,45 @@ static volatile bool kbd_ep_busy = false;
 static volatile uint64_t kbd_ep_busy_since_us = 0;
 static bool kbd_registered = false;
 static usb_gamepad_output_cb_t output_callback = NULL;
+static void pro2_receive_rumble_isr(const uint8_t *data,uint32_t len)
+{
+    uint8_t ds[48];++pro_output_count;
+    if(pro2_rumble(&pro2,data,len,ds)) {
+        ++host_rumble_packets;host_rumble_ms=(uint32_t)(bflb_mtimer_get_time_us()/1000);
+        if(output_callback) output_callback(ds,sizeof(ds));
+    }
+}
+static void xbox_receive_isr(const uint8_t *data, uint32_t len)
+{
+    uint8_t report[48];
+    ++pro_output_count;
+    if (xbox_output(data, len, report)) {
+        memcpy(xbox_rumble, data, sizeof(xbox_rumble));
+        if (!usb_audio_stream_open() && output_callback)
+            output_callback(report, sizeof(report));
+    }
+}
+void usb_gamepad_audio_stream_changed(bool active)
+{
+    if (!current_xbox_mode || !output_callback) return;
+    const uint8_t stop[8]={0,8};
+    uint8_t report[48];
+    if (xbox_output(active ? stop : xbox_rumble, 8, report))
+        output_callback(report, sizeof(report));
+}
+static void xbox_stop_rumble_isr(void)
+{
+    if (!current_xbox_mode && !current_pro2_mode) return;
+    const uint8_t stop[8]={0,8,0,0,0,0,0,0};
+    memcpy(xbox_rumble, stop, sizeof(xbox_rumble));
+    uint8_t report[48];
+    if (xbox_output(stop, sizeof(stop), report) && output_callback)
+        output_callback(report, sizeof(report));
+}
+static void xbox_config_handler(uint8_t busid, uint8_t ep, uint32_t nbytes)
+{
+    (void)busid; (void)ep; (void)nbytes; /* Features use EP0 only. */
+}
 
 /* Suspend/resume hooks for wake module */
 static void (*hook_suspend)(void)    = NULL;
@@ -713,9 +830,9 @@ static volatile bool    pending_active = false;
 ATTR_TCM_SECTION
 static void try_send_pending(void)
 {
-    if (current_switch_mode) {
+    if (current_switch_mode || current_pro2_mode) {
         if (!usb_configured || ep_in_busy) return;
-        bool reply = pro_reply_tail != pro_reply_head;
+        bool reply = current_switch_mode && pro_reply_tail != pro_reply_head;
         if (!reply && !pending_active) return;
         memcpy(usb_in_buf, reply ? pro_replies[pro_reply_tail] : pro_latest, 64);
         ep_in_busy = true;
@@ -730,6 +847,13 @@ static void try_send_pending(void)
     }
     if (!pending_active || !usb_configured || ep_in_busy)
          return;
+    if (current_xbox_mode) {
+        xbox_input((const uint8_t *)pending_payload, usb_in_buf);
+        ep_in_busy = true;
+        if (usbd_ep_start_write(0, GAMEPAD_IN_EP, usb_in_buf, 20) < 0) ep_in_busy=false;
+        else { pending_active=false; ++input_sent_count; }
+        return;
+    }
     usb_in_buf[0] = DS5_USB_REPORT_ID_INPUT;
     memcpy(usb_in_buf + 1, (const void *)pending_payload,
            DS5_USB_INPUT_PAYLOAD_LEN);
@@ -769,20 +893,31 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
         usb_configured = true;
         ep_in_busy = false;
         kbd_ep_busy = false;
-        if (current_switch_mode) usbd_ep_start_read(busid, 0x01, pro_out_buf, 64);
+        if (current_switch_mode || current_xbox_mode || current_pro2_mode)
+            usbd_ep_start_read(busid, current_xbox_mode ? XBOX_EP_OUT : 0x01, pro_out_buf, current_xbox_mode ? 32 : 64);
+        if(current_pro2_mode) usbd_ep_start_read(busid,PRO2_BULK_OUT,pro2_bulk_out,usbd_get_port_speed(busid)==USB_SPEED_HIGH?512:64);
+        if (current_xbox_mode) {
+            uint8_t neutral[63]={0};
+            neutral[0]=neutral[1]=neutral[2]=neutral[3]=128; neutral[7]=8;
+            memcpy((void *)pending_payload,neutral,63);
+            pending_active=true; try_send_pending();
+        }
         LOG_INF("[USB-EVT] CONFIGURED — host enumeration complete!\n");
         if (hook_configured)
             hook_configured();
         break;
     case USBD_EVENT_RESET:
+        local_test.pattern=0;local_test_pending=false;++local_test_epoch;
+        xbox_stop_rumble_isr();
         usb_configured = false;
         ep_in_busy = false;
         kbd_ep_busy = false;
         first_usb_send_logged = false;
-        if (current_switch_mode) {
+        if (current_switch_mode || current_pro2_mode) {
             ++pro_generation;
             pro_reset_pending = true;
             pro_reply_head = pro_reply_tail = 0;
+            pro2_bulk_busy=false;pro2_reply_len=pro2_reply_offset=0;
             pending_active = false;
             pro_output_entry_t discarded;
             while (pro_output_queue && xQueueReceiveFromISR(pro_output_queue, &discarded, NULL) == pdTRUE) {}
@@ -794,6 +929,8 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
         LOG_INF("[USB-EVT] RESET — host detected device, bus reset sent\n");
         break;
     case USBD_EVENT_SUSPEND:
+        local_test.pattern=0;local_test_pending=false;++local_test_epoch;
+        xbox_stop_rumble_isr();
         usb_configured = false;
         ep_in_busy = false;
         kbd_ep_busy = false;
@@ -816,6 +953,8 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
         LOG_INF("[USB-EVT] CONNECTED (VBUS detected)\n");
         break;
     case USBD_EVENT_DISCONNECTED:
+        local_test.pattern=0;local_test_pending=false;++local_test_epoch;
+        xbox_stop_rumble_isr();
         usb_configured = false;
         LOG_INF("[USB-EVT] DISCONNECTED (VBUS lost)\n");
         break;
@@ -850,6 +989,40 @@ void usb_gamepad_set_dse_mode(bool dse)
 ATTR_TCM_SECTION
 void usb_gamepad_process_deferred(void)
 {
+    if(local_test_pending) {
+        uint8_t pattern;uint16_t duration;uint32_t generation;
+        taskENTER_CRITICAL();pattern=local_test_pattern;duration=local_test_duration;
+        generation=local_test_generation;local_test_pending=false;taskEXIT_CRITICAL();
+        struct switch_test candidate;
+        uint32_t now=(uint32_t)(bflb_mtimer_get_time_us()/1000);
+        if(switch_test_begin(&candidate,pattern,duration,now)) {
+            taskENTER_CRITICAL();
+            if(generation==local_test_epoch && usb_configured &&
+               bt_hid_host_get_state()==BT_HID_STATE_CONNECTED) local_test=candidate;
+            taskEXIT_CRITICAL();
+        }
+    }
+    if(current_pro2_mode && pro_output_queue) {
+        pro_output_entry_t item;
+        taskENTER_CRITICAL();
+        if(pro_reset_pending) {
+            pro_reset_pending=false;switch_pro_init(&pro,pro_mac);pro2_init(&pro2);
+        }
+        if(!pro2_bulk_busy && pro2_reply_offset>=pro2_reply_len && xQueueReceive(pro_output_queue,&item,0)==pdTRUE) {
+            if(item.generation==pro_generation) {
+                pro2_reply_offset=0;
+                pro2_reply_len=pro2_command(&pro2,item.bytes,item.len,pro2_bulk_reply);
+            }
+        }
+        pro2_bulk_try_send();
+        static uint32_t last_pro2_us;
+        uint32_t us=(uint32_t)bflb_mtimer_get_time_us();
+        if(pro2.streaming && (uint32_t)(us-last_pro2_us)>=4000) {
+            pro2_report(&pro2,&pro,us,pro_latest);pending_active=true;last_pro2_us=us;
+        }
+        try_send_pending();
+        taskEXIT_CRITICAL();
+    }
     if (current_switch_mode && pro_output_queue) {
         if (pro_reset_pending) {
             taskENTER_CRITICAL();
@@ -929,9 +1102,11 @@ void usb_gamepad_process_deferred(void)
 int usb_gamepad_init(usb_gamepad_output_cb_t output_cb)
 {
     current_usb_mode = config_controller_mode();
-    current_switch_mode = config_controller_mode() >= 3;
+    current_switch_mode = current_usb_mode == 3 || current_usb_mode == 4;
+    current_xbox_mode = current_usb_mode == XBOX_MODE;
+    current_pro2_mode = current_usb_mode == PRO2_MODE;
     current_switch_mic = config_controller_mode() == 4;
-    if (current_switch_mode) {
+    if (current_switch_mode || current_pro2_mode) {
         uint8_t chip[8]; bflb_efuse_get_chipid(chip);
         memcpy(pro_mac, chip, 6); pro_mac[0] = (pro_mac[0] | 2) & 0xfe;
         switch_pro_init(&pro, pro_mac);
@@ -939,7 +1114,20 @@ int usb_gamepad_init(usb_gamepad_output_cb_t output_cb)
         if (!pro_output_queue) return -1;
         device_desc[8] = 0x7e; device_desc[9] = 0x05;
         device_desc[10] = 0x09; device_desc[11] = 0x20;
-        device_desc[12] = 0x03; /* revision for the corrected endpoint layout */
+        device_desc[12] = 0x07; /* r7 adds the vendor motion diagnostic report */
+    }
+    if(current_pro2_mode) {
+        pro2_init(&pro2);device_desc[10]=0x69;device_desc[11]=0x20;device_desc[12]=2;device_desc[13]=2;
+        pro2_property_table[1]=pro2_os_properties();usb_desc.msosv1_descriptor=&pro2_msos;
+    }
+    if (current_xbox_mode) {
+        /* Composite identity: avoid the legacy whole-device Xbox driver
+         * swallowing audio and configuration interfaces on Windows. */
+        device_desc[4]=0xef; device_desc[5]=2; device_desc[6]=1;
+        device_desc[8]=0x09; device_desc[9]=0x12;
+        device_desc[10]=0x05; device_desc[11]=0xdb;
+        device_desc[12]=0x05;
+        usb_desc.msosv1_descriptor=&xbox_msos;
     }
     output_callback = output_cb;
     memset(usb_in_buf, 0, sizeof(usb_in_buf));
@@ -962,7 +1150,7 @@ int usb_gamepad_init(usb_gamepad_output_cb_t output_cb)
      * enable_wake now uses USB remote-wake signal only (F15 key removed) —
      * no keyboard interface needed. remap KBD type is disabled for now.
      * REMOTE-WAKEUP bit stays in bmAttributes when wake is enabled. */
-    const bool need_kbd = !current_switch_mode && (remap_has_kbd_targets() ||
+    const bool need_kbd = !current_switch_mode && !current_xbox_mode && !current_pro2_mode && (remap_has_kbd_targets() ||
                           config_get()->ps_shortcut_enabled ||
                           (config_get()->tp_mode == 2 || config_get()->tp_mode == 3));
     const bool need_remote_wake = config_get()->enable_wake || need_kbd;
@@ -989,14 +1177,21 @@ int usb_gamepad_init(usb_gamepad_output_cb_t output_cb)
            (unsigned)sizeof(device_desc), (unsigned)sizeof(config_desc));
 
     /* Interface 0,1,2: Audio Control + Streaming OUT + Streaming IN */
-    if (!current_switch_mode) usb_audio_register(0);
+    if (!current_switch_mode && !current_xbox_mode && !current_pro2_mode) usb_audio_register(0);
+    if (current_xbox_mode) usb_audio_register_xbox_playback(0);
     LOG_INF("[USB-INIT] Audio interfaces registered\n");
 
     /* Interface 3: Gamepad — select descriptor based on DSE mode */
     const uint8_t *rd  = current_dse_mode ? hid_report_desc_dse : hid_report_desc_ds;
     uint16_t rd_len    = current_dse_mode ? sizeof(hid_report_desc_dse) : sizeof(hid_report_desc_ds);
     if (current_switch_mode) rd = switch_usb_hid_descriptor(&rd_len);
+    if (current_pro2_mode) rd = pro2_hid_descriptor(&rd_len);
+    if (current_xbox_mode) {
+        usbd_add_interface(0, &xbox_intf);
+        rd=xbox_hid_descriptor(&rd_len);
+    }
     usbd_add_interface(0, usbd_hid_init_intf(0, &hid_intf, rd, rd_len));
+    if(current_pro2_mode) usbd_add_interface(0,&pro2_bulk_intf);
     if (current_switch_mic) usb_audio_register_pro_mic(0);
     LOG_INF("[USB-INIT] Gamepad HID intf added (report_desc=%uB, DSE=%d)\n",
            rd_len, current_dse_mode);
@@ -1012,9 +1207,19 @@ int usb_gamepad_init(usb_gamepad_output_cb_t output_cb)
     hid_ep_in.ep_addr = GAMEPAD_IN_EP;
     hid_ep_in.ep_cb = hid_ep_in_handler;
     usbd_add_endpoint(0, &hid_ep_in);
-    if (current_switch_mode) {
-        pro_ep_out.ep_addr = 0x01; pro_ep_out.ep_cb = pro_out_handler;
+    if (current_xbox_mode) {
+        xbox_config_ep.ep_addr=XBOX_CONFIG_EP; xbox_config_ep.ep_cb=xbox_config_handler;
+        usbd_add_endpoint(0, &xbox_config_ep);
+    }
+    if (current_switch_mode || current_xbox_mode || current_pro2_mode) {
+        pro_ep_out.ep_addr = current_xbox_mode ? XBOX_EP_OUT : 0x01;
+        pro_ep_out.ep_cb = pro_out_handler;
         usbd_add_endpoint(0, &pro_ep_out);
+    }
+    if(current_pro2_mode) {
+        pro2_bulk_out_ep.ep_addr=PRO2_BULK_OUT;pro2_bulk_out_ep.ep_cb=pro2_bulk_out_handler;
+        pro2_bulk_in_ep.ep_addr=PRO2_BULK_IN;pro2_bulk_in_ep.ep_cb=pro2_bulk_in_handler;
+        usbd_add_endpoint(0,&pro2_bulk_out_ep);usbd_add_endpoint(0,&pro2_bulk_in_ep);
     }
 
 
@@ -1126,8 +1331,9 @@ void usb_gamepad_set_polling_rate(uint8_t mode)
 ATTR_TCM_SECTION
 int usb_gamepad_send_raw_input(const uint8_t *payload)
 {
+    ++sensor_samples;
     controller_input_ms = (uint32_t)(bflb_mtimer_get_time_us()/1000);
-    if (current_switch_mode) {
+    if (current_switch_mode || current_pro2_mode) {
         const uint8_t *cal; uint16_t cal_len;
         taskENTER_CRITICAL();
         switch_pro_input(&pro, payload);
@@ -1136,9 +1342,11 @@ int usb_gamepad_send_raw_input(const uint8_t *payload)
         taskEXIT_CRITICAL();
         return 0;
     }
+    taskENTER_CRITICAL();
     memcpy((void *)pending_payload, payload, DS5_USB_INPUT_PAYLOAD_LEN);
     pending_active = true;
     try_send_pending();
+    taskEXIT_CRITICAL();
     return 0;
 }
 
@@ -1216,7 +1424,7 @@ static uint8_t kbd_idle_report[USB_KBD_EP_MPS];
 
 static bool is_dongle_cmd(uint8_t report_id)
 {
-    return (report_id >= 0xF6 && report_id <= 0xF9) || report_id == 0xFB;
+    return report_id >= 0xF6 && report_id <= 0xFB;
 }
 
 /*
@@ -1305,6 +1513,12 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id,
 {
     (void)busid;
 
+    if(current_pro2_mode && report_type==1 && (report_id==5 || report_id==9)) {
+        struct pro2_state snapshot=pro2;snapshot.mode=report_id;
+        pro2_report(&snapshot,&pro,(uint32_t)bflb_mtimer_get_time_us(),feature_resp_buf);
+        *data=feature_resp_buf;*len=64;return;
+    }
+
     if (intf == USB_INTF_KBD) {
         memset(kbd_idle_report, 0, sizeof(kbd_idle_report));
         *data = kbd_idle_report;
@@ -1331,10 +1545,10 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id,
             *len  = 1 + cfg_len;
             LOG_INF("[USB] GET_REPORT(0xF7) → config %u bytes\n", cfg_len);
         } else if (report_id == 0xF8) {
-            uint16_t ver_len = strlen(FIRMWARE_VERSION " Pro-dev1 r3");
+            uint16_t ver_len = strlen(FIRMWARE_VERSION " Pro-dev1 r7");
             if (ver_len > FEATURE_DATA_MAX)
                 ver_len = FEATURE_DATA_MAX;
-            memcpy(feature_resp_buf + 1, FIRMWARE_VERSION " Pro-dev1 r3", ver_len);
+            memcpy(feature_resp_buf + 1, FIRMWARE_VERSION " Pro-dev1 r7", ver_len);
             *data = feature_resp_buf;
             *len  = 1 + ver_len;
             LOG_INF("[USB] GET_REPORT(0xF8) → firmware version\n");
@@ -1369,14 +1583,14 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id,
             feature_resp_buf[15] = 2;
             feature_resp_buf[16] = current_usb_mode;
             feature_resp_buf[17] = bt_hid_host_get_state() == BT_HID_STATE_CONNECTED;
-            feature_resp_buf[18] = current_switch_mode ? pro.mode : 1;
+            feature_resp_buf[18] = current_pro2_mode ? pro2.mode : current_switch_mode ? pro.mode : current_xbox_mode ? 0 : 1;
             feature_resp_buf[19] = (usb_configured ? 1 : 0) |
                 (usb_audio_mic_is_active() ? 2 : 0) | (audio_mic_active() ? 4 : 0) |
                 (current_switch_mode && pro.vibration ? 8 : 0);
             ds5_write_le32(feature_resp_buf+20, pro_output_count);
             ds5_write_le32(feature_resp_buf+24, input_sent_count);
             ds5_write_le32(feature_resp_buf+28, audio_mic_frame_count());
-            if (current_switch_mode) memcpy(feature_resp_buf+32, pro.ds, 10);
+            if (current_switch_mode || current_pro2_mode) memcpy(feature_resp_buf+32, pro.ds, 10);
             else memcpy(feature_resp_buf+32, (const void *)pending_payload, 10);
             uint16_t peak = audio_mic_peak();
             feature_resp_buf[42] = peak & 255; feature_resp_buf[43] = peak >> 8;
@@ -1384,9 +1598,34 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id,
                 (uint32_t)(bflb_mtimer_get_time_us()/1000)-controller_input_ms : 0xffffffff;
             ds5_write_le32(feature_resp_buf+44, age);
             ds5_write_le32(feature_resp_buf+48, pro_reply_count);
-            feature_resp_buf[52] = 7; /* endpoint fix, simple HID, optional mic */
+            feature_resp_buf[52] = 63 | ((current_switch_mode || current_pro2_mode)?64:0);
             feature_resp_buf[53] = config_save_status;
             *len = 54;
+        } else if (report_id == 0xFA) {
+            uint8_t *p=feature_resp_buf+1;memset(p,0,63);p[0]=0xa8;p[1]=1;
+            uint32_t now=(uint32_t)(bflb_mtimer_get_time_us()/1000);
+            bool connected=bt_hid_host_get_state()==BT_HID_STATE_CONNECTED;
+            bool testing=switch_test_active(&local_test,now);
+            uint8_t mode=current_pro2_mode?pro2.mode:pro.mode;
+            bool imu=current_pro2_mode?(pro2.features&4)!=0:pro.imu;
+            bool vibration=current_pro2_mode?(pro2.features&0x20)!=0:pro.vibration;
+            uint32_t age=controller_input_ms?now-controller_input_ms:0xffffffff;
+            p[2]=(connected?1:0)|(imu?2:0)|(vibration?4:0)|(testing?8:0)|
+                ((connected && age<500)?16:0)|((mode==0x30||mode==5)?32:0);
+            p[3]=mode;p[4]=testing?local_test.pattern:0;
+            if(connected) memcpy(p+5,pro.ds+15,12);
+            uint8_t native[64];
+            if(current_pro2_mode) {
+                struct pro2_state snapshot=pro2;pro2_report(&snapshot,&pro,(uint32_t)bflb_mtimer_get_time_us(),native);
+                if(snapshot.mode==5) memcpy(p+17,native+49,12);
+            } else { switch_pro_report(&pro,now,native);memcpy(p+17,native+13,12); }
+            ds5_write_le32(p+29,age);ds5_write_le32(p+33,host_rumble_packets);
+            ds5_write_le32(p+37,audio_haptic_packets_sent());
+            ds5_write_le32(p+41,host_rumble_packets?now-host_rumble_ms:0xffffffff);
+            ds5_write_le32(p+45,audio_haptic_packets_failed());ds5_write_le32(p+49,sensor_samples);
+            ds5_write_le32(p+53,local_test_requests);ds5_write_le32(p+57,pro_output_count);
+            uint16_t remain=(uint16_t)switch_test_remaining(&local_test,now);p[61]=(uint8_t)remain;p[62]=(uint8_t)(remain>>8);
+            *data=feature_resp_buf;*len=64;
         } else if (report_id == 0xFB) {
             feature_resp_buf[0] = 0xFB;
             feature_resp_buf[1] = remap_get_active_profile();
@@ -1404,7 +1643,7 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id,
         return;
     }
 
-    if (current_switch_mode) { *len = 0; return; }
+    if (current_switch_mode || current_xbox_mode || current_pro2_mode) { *len = 0; return; }
 
     /* DSE profile reports (0x70-0x7B): NAK while prefetch in progress
      * so the PS Accessories app retries instead of caching empty data. */
@@ -1455,11 +1694,12 @@ void usbd_hid_set_report(uint8_t busid, uint8_t intf, uint8_t report_id,
         payload_len--;
     }
 
-    if (current_switch_mode && report_type == 0x02) {
+    if ((current_switch_mode || current_pro2_mode) && report_type == 0x02) {
         uint8_t packet[64];
         if (payload_len > 63) return;
         packet[0] = report_id; memcpy(packet + 1, payload, payload_len);
-        pro_receive_isr(packet, payload_len + 1);
+        if(current_pro2_mode) pro2_receive_rumble_isr(packet,payload_len+1);
+        else pro_receive_isr(packet, payload_len + 1);
         return;
     }
 
@@ -1479,6 +1719,14 @@ void usbd_hid_set_report(uint8_t busid, uint8_t intf, uint8_t report_id,
             usb_config_save_pending = true;
         } else if (cmd == 0x03) {
             usb_reset_pending = true;
+        } else if(cmd==0x10 && payload_len>=4) {
+            unsigned pattern=payload[1],duration=payload[2]|(unsigned)payload[3]<<8;
+            if(pattern==0) { local_test.pattern=0;local_test_pending=false;++local_test_epoch; }
+            else if(current_switch_mode && pattern<=3 && duration>=100 && duration<=1000 &&
+                    bt_hid_host_get_state()==BT_HID_STATE_CONNECTED) {
+                local_test_pattern=(uint8_t)pattern;local_test_duration=(uint16_t)duration;
+                local_test_generation=++local_test_epoch;local_test_pending=true;++local_test_requests;
+            }
         }
         return;
     }
@@ -1525,7 +1773,7 @@ void usbd_hid_set_report(uint8_t busid, uint8_t intf, uint8_t report_id,
         return;
     }
 
-    if (current_switch_mode) return;
+    if (current_switch_mode || current_xbox_mode || current_pro2_mode) return;
 
     /* DSE profile writes (0x60-0x62) and unlock (0x80) — forward + notify */
     if (report_type == 0x03 && payload_len > 0 &&
