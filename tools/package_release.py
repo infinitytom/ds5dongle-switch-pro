@@ -55,6 +55,7 @@ def main():
     common['VALIDATION.md'] = (ROOT / 'docs/VALIDATION.md').read_bytes()
     common['COMPATIBILITY_CN.md'] = (ROOT / 'docs/COMPATIBILITY_CN.md').read_bytes()
     common['NS2_CONSOLE_RESEARCH_CN.md'] = (ROOT / 'docs/NS2_CONSOLE_RESEARCH_CN.md').read_bytes()
+    common['PRO2_FEATURES_CN.md'] = (ROOT / 'docs/PRO2_FEATURES_CN.md').read_bytes()
     common['alipay-donate.jpg'] = (ROOT / 'web/assets/alipay-donate.jpg').read_bytes()
     revision = re.search(r'Pro-dev1 (r\d+)', (ROOT / 'src/usb_gamepad.c').read_text(encoding='utf-8')).group(1)
     manifest = {'version': args.version, 'firmware_revision': revision, 'source_commit': commit, 'hardware_verified': False,
@@ -107,6 +108,7 @@ def main():
                                 'Xbox audio and Pro2 require r5 firmware. Pro2 has no headset audio or complete HD Rumble 2.\n'
                                 'Motion/HD diagnostics and Ryujinx USB timeout fix require r7 or newer firmware.\n'
                                 'Console-oriented USB identity/pairing changes require r8; this adapter is NOT console verified.\n'
+                                'Pro2 native 09 motion, Edge paddles, player LEDs and user calibration require r10. See PRO2_FEATURES_CN.md.\n'
                                 'Console authentication and native console play are NOT verified.\n'
                                 'Exact working-tree sources: source-snapshot.zip. No remote release was published.\n').encode('utf-8')
         preview_path = out / f'ds5dongle-{args.version}-{revision}-local-test.zip'

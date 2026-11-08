@@ -15,8 +15,8 @@ const assert=require('node:assert/strict');
        if(window.failReport===id)throw Error('fixture read failed');
        let data;
        if(id===0xf7)data=new Uint8Array([id,...cfg]);
-       if(id===0xf8)data=new Uint8Array([id,...new TextEncoder().encode(window.legacyFirmware?'TEST Pro-dev1':'TEST Pro-dev1 r9')]);
-       if(id===0xf9){data=new Uint8Array(64);data[0]=id;data[1]=210;data[12]=80;data[14]=0xd5;data[15]=2;data[16]=activeMode;data[17]=1;data[18]=[3,4].includes(activeMode)?0x30:activeMode===6?9:activeMode===5?0:1;data[19]=1;data[32]=data[33]=data[34]=data[35]=128;data[39]=8;data[52]=window.noXbox?7:window.noPro2?31:window.noMotion?63:127;data[53]=saveStatus;data[54]=0xd9;data[55]=8;data[56]=60;data[58]=1;data[62]=7;data[63]=1;}
+       if(id===0xf8)data=new Uint8Array([id,...new TextEncoder().encode(window.legacyFirmware?'TEST Pro-dev1':'TEST Pro-dev1 r11')]);
+       if(id===0xf9){data=new Uint8Array(64);data[0]=id;data[1]=210;data[12]=window.fixtureBattery??80;data[14]=0xd5;data[15]=2;data[16]=activeMode;data[17]=1;data[18]=[3,4].includes(activeMode)?0x30:activeMode===6?9:activeMode===5?0:1;data[19]=1;data[32]=data[33]=data[34]=data[35]=128;data[39]=8;data[52]=window.noXbox?7:window.noPro2?31:window.noMotion?63:127;data[53]=saveStatus;data[54]=0xd9;data[55]=8;data[56]=60;data[58]=1;data[62]=7;data[63]=1;}
        if(id===0xfa){
          data=new Uint8Array(64);data[0]=id;data[1]=0xa8;data[2]=1;
          const remaining=Math.max(0,testUntil-Date.now());data[3]=55|(remaining?8:0);data[4]=0x30;data[5]=remaining?testPattern:0;
@@ -50,6 +50,14 @@ const assert=require('node:assert/strict');
  const xboxFilter=await page.evaluate(()=>window.hidFilters.find(f=>f.vendorId===0x045e));
  assert.equal(xboxFilter.productId,0x028e);assert.equal(xboxFilter.usagePage,0xff00);
  assert.match(await page.locator('#battery').innerText(),/80/);
+ assert.match(await page.locator('#receiver-hint').innerText(),/手柄已连接/);
+ await page.evaluate(()=>{window.fixtureBattery=10;});
+ await page.getByRole('button',{name:'重新读取',exact:true}).click();
+ await page.waitForFunction(()=>document.getElementById('receiver-hint').textContent.includes('不超过 10%'));
+ await page.evaluate(()=>{window.fixtureBattery=80;});
+ await page.getByRole('button',{name:'重新读取',exact:true}).click();
+ await page.waitForFunction(()=>!document.getElementById('save').disabled&&document.getElementById('battery').textContent.includes('80'));
+
  assert.equal(await page.locator('h1').evaluate(el=>parseFloat(getComputedStyle(el).fontSize)>=30),true);
  assert.equal(await page.locator('#save').evaluate(el=>parseFloat(getComputedStyle(el).fontSize)>=14&&Number(getComputedStyle(el).fontWeight)>=700),true);
  await page.screenshot({path:'build-tests/dashboard-r6-desktop.png',fullPage:true});

@@ -65,7 +65,8 @@ function updateSummary(){
     const revision=Number(firmware.match(/Pro-dev1 r(\d+)/)?.[1]||0);
     $('mode-note').textContent=diagnostic&&!(diagnostic.capabilities&32)?'此接收器固件没有 Pro2 功能，不能保存该模式。请核对连接诊断中的固件版本，网页更新不会升级固件。':
       revision&&revision<8?'当前固件的 Pro2 主要面向电脑，缺少 NS2 主机身份与配对握手。主机测试需 r8 或更新固件；本接收器尚未通过 NS2 验收。':
-      'Pro2 实验：已补充原生 USB 身份与配对握手；电脑 0x05 体感可用，主机 0x09 体感未完成。无耳麦音频与完整 HD Rumble 2，NS2 主机待测。';
+      revision&&revision<10?'当前 Pro2 固件缺少本轮主机 0x09 体感、Edge GL/GR、玩家灯和校准保存扩展，请刷入 r10 后复测；无耳麦音频与完整 HD Rumble 2。':
+      'Pro2 实验：r10 新增主机 0x09 体感转换、Edge GL/GR、玩家灯与用户校准保存；电脑 0x05 保留。无耳麦音频与完整 HD Rumble 2，新功能待本接收器主机实测。';
   }
   if(!original){$('apply-summary').textContent=pendingMode!==null?'正在重新连接设备':'等待连接设备';$('apply-detail').textContent=pendingMode!==null?'需要时点击右上角授权新模式接收器':'配置由接收器保存到闪存';$('save-indicator').className='save-indicator';return;}
   const before=decode(original),values=formValues();
@@ -150,7 +151,7 @@ function resetLiveStatus(){
   $('live-badge').textContent='等待连接';$('live-badge').className='mini-badge';
   $('active-mode').textContent='尚未连接';$('mode-detail').textContent='连接后读取运行模式';
   $('bt-state').textContent='未连接';$('input-age').textContent='等待接收器连接';
-  $('battery').textContent='—';$('rssi').textContent='—';
+  $('battery').textContent='—';$('rssi').textContent='—';$('receiver-hint').textContent='连接后查看接收器闪灯说明。';
   for(const id of ['disconnect-reason','disconnect-battery','disconnect-count'])$(id).textContent='—';
 }
 function updateInput(raw){
@@ -180,6 +181,10 @@ function renderStatus(s){
   $('report-value').textContent=s.extended?`0x${s.reportMode.toString(16).toUpperCase()}`:'旧固件未提供';
   $('commands-value').textContent=s.extended?String(s.commands):'—';$('reports-value').textContent=s.extended?String(s.reports):'—';$('replies-value').textContent=s.extended?String(s.replies):'—';
   $('save-value').textContent=s.extended?['未确认 / 待保存','正在写入闪存','已写入闪存','闪存保存失败'][s.saveStatus]||'未知':'旧固件无回执';
+  $('receiver-hint').textContent=!connected?'手柄尚未连接。LCTech 的红色电源灯常亮，蓝色状态灯闪烁会看起来红紫交替；这也可能是等待连接，不能单凭灯色判断掉线。':
+    s.batteryState===0&&s.battery!==null&&s.battery<=10?'手柄已连接，但电量不超过 10%：接收器会闪灯警告，请先充电。':
+    s.extended&&s.inputAge>1000?'蓝牙状态为已连接，但输入已超过 1 秒未更新，请保留断线历史并导出诊断。':
+    '手柄已连接。红紫交替也可能来自板载状态灯；是否掉线请结合输入更新时间和断开次数判断。';
   const history=s.linkHistory;
   $('disconnect-reason').textContent=!history?'需 r9 固件':!history.disconnects?'本次上电未记录断线':
     ({8:'蓝牙连接超时',19:'对端终止连接',22:'本机终止 / 强制清理'}[history.reason]||
@@ -273,7 +278,7 @@ $('import').onchange=e=>run(async()=>{
   if(json.format!=='ds5-local-v1'||!Array.isArray(json.bytes)||json.bytes.some(x=>!Number.isInteger(x)||x<0||x>255))throw Error('无效的配置文件');
   showConfig(encode(original,decode(new Uint8Array(json.bytes))));announce('配置已载入表单','点击「保存并应用」后才会写入接收器。');
 });
-$('diagnostic-export').onclick=()=>download('ds5-diagnostics.json',{app:'alpha.10',time:new Date().toISOString(),firmware,usb:device?{vendorId:device.vendorId,productId:device.productId,productName:device.productName}:null,config:original?decode(original):null,diagnostic,motionDiagnostic,events});
+$('diagnostic-export').onclick=()=>download('ds5-diagnostics.json',{app:'alpha.12',time:new Date().toISOString(),firmware,usb:device?{vendorId:device.vendorId,productId:device.productId,productName:device.productName}:null,config:original?decode(original):null,diagnostic,motionDiagnostic,events});
 
 $('readmap').onclick=()=>run(async()=>{
   await send(0xfb,new Uint8Array([3,Number($('profile').value)]));

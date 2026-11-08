@@ -16,6 +16,7 @@
 #include "config.h"
 #include "dse.h"
 #include "remap.h"
+#include "battery_light.h"
 
 #include "bl616_glb.h"
 #include "btble_lib_api.h"
@@ -123,6 +124,14 @@ static void apply_config_overlay(uint8_t *d, uint16_t len)
  * set_state_data: 47 bytes of SetStateData
  * seq: sequence counter
  * out: 78-byte output buffer */
+static bool controller_light_color(uint8_t rgb[3])
+{
+    struct config_body *cfg=config_get();
+    const uint8_t configured[3]={cfg->led_r,cfg->led_g,cfg->led_b};
+    return battery_light_color(cfg->controller_mode,cached_battery_level,
+                               cached_battery_state,configured,rgb);
+}
+
 static void build_bt_output(const uint8_t *set_state_data, uint16_t len,
                             uint8_t seq, uint8_t *out)
 {
@@ -133,6 +142,11 @@ static void build_bt_output(const uint8_t *set_state_data, uint16_t len,
     if (len > DS5_USB_OUTPUT_PAYLOAD_LEN)
         len = DS5_USB_OUTPUT_PAYLOAD_LEN;
     memcpy(out + 3, set_state_data, len);
+    uint8_t rgb[3];
+    if(controller_light_color(rgb)) {
+        out[4]=(out[4]&~0x08)|0x04; /* battery color owns ResetLights too */
+        memcpy(out+3+44,rgb,3);
+    }
 
     uint32_t crc = ds5_crc32(DS5_BT_OUTPUT_CRC_SEED, out,
                              DS5_BT_OUTPUT_REPORT_SIZE - 4);
@@ -152,6 +166,10 @@ static void build_bt_output_ext(const uint8_t *set_state_data, uint16_t len,
     if (len > DS5_BT_OUTPUT_EXT_PAYLOAD)
         len = DS5_BT_OUTPUT_EXT_PAYLOAD;
     memcpy(out + 4, set_state_data, len);
+    uint8_t rgb[3];
+    if(controller_light_color(rgb) && len>=DS5_USB_OUTPUT_PAYLOAD_LEN) {
+        out[5]|=0x04;memcpy(out+4+44,rgb,3);
+    }
 
     uint32_t crc = ds5_crc32(DS5_BT_OUTPUT_CRC_SEED, out,
                              DS5_BT_OUTPUT_EXT_SIZE - 4);
@@ -849,6 +867,23 @@ static void bt_task(void *arg)
         }
 
         if (ds5_connected) {
+            /* Refresh only on a color change, or every five seconds in case
+             * a congested output queue dropped the prior LED-only packet.
+             * Runs in the existing BT output task, not the input callback. */
+            static uint8_t last_rgb[3];
+            static uint64_t last_light_us;
+            static uint64_t last_light_attempt_us;
+            uint8_t rgb[3];uint64_t light_now=bflb_mtimer_get_time_us();
+            if((!last_light_attempt_us || light_now-last_light_attempt_us>=1000000ULL) && controller_light_color(rgb) &&
+               (!last_light_us || memcmp(rgb,last_rgb,3) || light_now-last_light_us>=5000000ULL)) {
+                uint8_t payload[DS5_USB_OUTPUT_PAYLOAD_LEN]={0},packet[DS5_BT_OUTPUT_REPORT_SIZE];
+                last_light_attempt_us=light_now;
+                payload[1]=0x04;memcpy(payload+44,rgb,3);
+                build_bt_output(payload,sizeof(payload),output_seq,packet);
+                output_seq=(output_seq+1)&15;
+                int result=bt_hid_host_send_output(packet,sizeof(packet));
+                if(!result) { memcpy(last_rgb,rgb,3);last_light_us=light_now; }
+            }
             /* Push UAC volume/mute changes to controller immediately */
             if (state_mgr_vol_dirty()) {
                 state_mgr_vol_ack();
@@ -1260,10 +1295,10 @@ static void usb_task(void *arg)
                 uint8_t batt = raw_report[2 + DS5_BATT_BYTE_OFFSET];
                 uint8_t pct  = batt & DS5_BATT_LEVEL_MASK;
                 uint8_t st   = (batt >> DS5_BATT_STATE_SHIFT) & 0x0F;
-                cached_battery_level = (pct > 10) ? 100 : pct * 10;
+                cached_battery_level = battery_percent(batt);
                 cached_battery_state = st;
                 bool discharging = (st == DS5_BATT_STATE_DISCHARGE);
-                bool is_low  = discharging && (pct <= DS5_BATT_LOW_THRESHOLD);
+                bool is_low  = discharging && cached_battery_level!=0xff && (pct <= DS5_BATT_LOW_THRESHOLD);
 
                 if (is_low && !battery_low) {
                     battery_low = true;

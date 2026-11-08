@@ -38,6 +38,11 @@ static struct usbd_endpoint pro2_bulk_out_ep, pro2_bulk_in_ep;
 static USB_NOCACHE_RAM_SECTION uint8_t pro2_bulk_out[512], pro2_bulk_reply[PRO2_REPLY_MAX], pro2_control_reply[64];
 static volatile unsigned pro2_reply_len, pro2_reply_offset;
 static volatile bool pro2_bulk_busy;
+static struct pro2_rx pro2_rx;
+static uint8_t pro2_user_calibration[PRO2_USER_CAL_SIZE];
+static bool pro2_cal_save_pending;
+extern int bt_settings_set_bin(const char *key,const uint8_t *data,size_t len);
+extern int bt_settings_get_bin(const char *key,uint8_t *data,size_t expected,size_t *actual);
 static int pro2_vendor_request(uint8_t busid, struct usb_setup_packet *setup, uint8_t **data, uint32_t *len)
 {
     (void)busid;
@@ -65,7 +70,7 @@ static volatile bool usb_configured = false;
 static volatile bool pro_reset_pending;
 static volatile uint32_t pro_generation;
 typedef struct {
-    uint8_t bytes[64];
+    uint8_t bytes[PRO2_COMMAND_MAX];
     uint32_t len;
     uint32_t generation;
 } pro_output_entry_t;
@@ -97,6 +102,7 @@ void usb_gamepad_on_bt_disconnect(void)
     if (!current_switch_mode && !current_pro2_mode) return;
     taskENTER_CRITICAL();
     switch_pro_disconnect(&pro);
+    if(current_pro2_mode)pro2_disconnect(&pro2);
     taskEXIT_CRITICAL();
 }
 void usb_gamepad_switch_render(uint32_t ms, float gain, int8_t *stereo, unsigned frames)
@@ -115,12 +121,10 @@ void usb_gamepad_switch_render(uint32_t ms, float gain, int8_t *stereo, unsigned
 
 static void pro_receive_isr(const uint8_t *data, uint32_t len)
 {
-    uint8_t packet[64] = {0};
-    if (!len || len > sizeof(packet) || !pro_output_queue) return;
-    memcpy(packet, data, len);
+    if (!len || len > PRO2_COMMAND_MAX || !pro_output_queue) return;
     /* Preserve actual length; the queue must not turn truncated packets valid. */
-    pro_output_entry_t item;
-    memcpy(item.bytes, packet, 64); item.len = len;
+    pro_output_entry_t item={0};
+    memcpy(item.bytes, data, len); item.len = len;
     item.generation = pro_generation;
     ++pro_output_count;
     if(len>=10 && data[0]==0x10) { ++host_rumble_packets;host_rumble_ms=(uint32_t)(bflb_mtimer_get_time_us()/1000); }
@@ -158,7 +162,8 @@ static void pro2_bulk_out_handler(uint8_t busid,uint8_t ep,uint32_t nbytes)
        ((pro2_bulk_out[3]==2 && !(pro2_bulk_out[8]&0x20)) ||
         ((pro2_bulk_out[3]==3 || pro2_bulk_out[3]==5) && (pro2_bulk_out[8]&0x20))))
         xbox_stop_rumble_isr();
-    pro_receive_isr(pro2_bulk_out,nbytes);
+    unsigned complete=pro2_rx_feed(&pro2_rx,pro2_bulk_out,nbytes);
+    if(complete)pro_receive_isr(pro2_rx.data,complete);
     usbd_ep_start_read(busid,ep,pro2_bulk_out,usbd_get_port_speed(busid)==USB_SPEED_HIGH?512:64);
 }
 
@@ -929,6 +934,7 @@ static void usbd_event_handler(uint8_t busid, uint8_t event)
             pro_reset_pending = true;
             pro_reply_head = pro_reply_tail = 0;
             pro2_bulk_busy=false;pro2_reply_len=pro2_reply_offset=0;
+            memset(&pro2_rx,0,sizeof(pro2_rx));
             pending_active = false;
             pro_output_entry_t discarded;
             while (pro_output_queue && xQueueReceiveFromISR(pro_output_queue, &discarded, NULL) == pdTRUE) {}
@@ -1018,11 +1024,16 @@ void usb_gamepad_process_deferred(void)
         taskENTER_CRITICAL();
         if(pro_reset_pending) {
             pro_reset_pending=false;switch_pro_init(&pro,pro_mac);pro2_init(&pro2);pro2_set_mac(&pro2,pro_mac);
+            memcpy(pro2.user_calibration,pro2_user_calibration,PRO2_USER_CAL_SIZE);
         }
         if(!pro2_bulk_busy && pro2_reply_offset>=pro2_reply_len && xQueueReceive(pro_output_queue,&item,0)==pdTRUE) {
             if(item.generation==pro_generation) {
                 pro2_reply_offset=0;
                 pro2_reply_len=pro2_command(&pro2,item.bytes,item.len,pro2_bulk_reply);
+                if(pro2.calibration_dirty) {
+                    memcpy(pro2_user_calibration,pro2.user_calibration,PRO2_USER_CAL_SIZE);
+                    pro2.calibration_dirty=false;pro2_cal_save_pending=true;
+                }
             }
         }
         pro2_bulk_try_send();
@@ -1032,7 +1043,15 @@ void usb_gamepad_process_deferred(void)
             pro2_report(&pro2,&pro,us,pro_latest);pending_active=true;last_pro2_us=us;
         }
         try_send_pending();
+        uint8_t led_report[48];bool send_led=pro2_take_led(&pro2,led_report);
         taskEXIT_CRITICAL();
+        if(send_led && output_callback)output_callback(led_report,sizeof(led_report));
+        static uint32_t last_cal_save;
+        if(pro2_cal_save_pending && (uint32_t)(us-last_cal_save)>1000000) {
+            last_cal_save=us;
+            if(!bt_settings_set_bin("pro2_cal",pro2_user_calibration,PRO2_USER_CAL_SIZE))pro2_cal_save_pending=false;
+            else LOG_WRN("[PRO2] User calibration persistence failed; retrying\n");
+        }
     }
     if (current_switch_mode && pro_output_queue) {
         if (pro_reset_pending) {
@@ -1134,8 +1153,12 @@ int usb_gamepad_init(usb_gamepad_output_cb_t output_cb)
     }
     if(current_pro2_mode) {
         pro2_init(&pro2);pro2_set_mac(&pro2,pro_mac);
+        memset(pro2_user_calibration,0xff,PRO2_USER_CAL_SIZE);size_t cal_size=0;
+        if(bt_settings_get_bin("pro2_cal",pro2_user_calibration,PRO2_USER_CAL_SIZE,&cal_size) || cal_size!=PRO2_USER_CAL_SIZE)
+            memset(pro2_user_calibration,0xff,PRO2_USER_CAL_SIZE);
+        memcpy(pro2.user_calibration,pro2_user_calibration,PRO2_USER_CAL_SIZE);
         device_desc[4]=0xef;device_desc[5]=2;device_desc[6]=1;
-        device_desc[10]=0x69;device_desc[11]=0x20;device_desc[12]=3;device_desc[13]=2;
+        device_desc[10]=0x69;device_desc[11]=0x20;device_desc[12]=4;device_desc[13]=2;
         pro2_property_table[1]=pro2_os_properties();usb_desc.msosv1_descriptor=&pro2_msos;
     }
     if (current_xbox_mode) {
@@ -1357,6 +1380,8 @@ int usb_gamepad_send_raw_input(const uint8_t *payload)
         switch_pro_input(&pro, payload);
         if (bt_hid_host_get_cached_feature(0x05, &cal, &cal_len))
             switch_pro_calibration(&pro, cal, cal_len);
+        if(current_pro2_mode && bt_hid_host_get_state()==BT_HID_STATE_CONNECTED)
+            pro2_input(&pro2,&pro,bt_hid_host_is_dse(),(uint32_t)bflb_mtimer_get_time_us());
         taskEXIT_CRITICAL();
         return 0;
     }
@@ -1563,10 +1588,10 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id,
             *len  = 1 + cfg_len;
             LOG_INF("[USB] GET_REPORT(0xF7) → config %u bytes\n", cfg_len);
         } else if (report_id == 0xF8) {
-            uint16_t ver_len = strlen(FIRMWARE_VERSION " Pro-dev1 r9");
+            uint16_t ver_len = strlen(FIRMWARE_VERSION " Pro-dev1 r11");
             if (ver_len > FEATURE_DATA_MAX)
                 ver_len = FEATURE_DATA_MAX;
-            memcpy(feature_resp_buf + 1, FIRMWARE_VERSION " Pro-dev1 r9", ver_len);
+            memcpy(feature_resp_buf + 1, FIRMWARE_VERSION " Pro-dev1 r11", ver_len);
             *data = feature_resp_buf;
             *len  = 1 + ver_len;
             LOG_INF("[USB] GET_REPORT(0xF8) → firmware version\n");
@@ -1637,13 +1662,20 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id,
             bool vibration=current_pro2_mode?(pro2.features&0x20)!=0:pro.vibration;
             uint32_t age=controller_input_ms?now-controller_input_ms:0xffffffff;
             p[2]=(connected?1:0)|(imu?2:0)|(vibration?4:0)|(testing?8:0)|
-                ((connected && age<500)?16:0)|((mode==0x30||mode==5)?32:0);
+                ((connected && age<500)?16:0)|((mode==0x30||mode==5||(current_pro2_mode&&mode==9&&pro2.motion_valid))?32:0);
             p[3]=mode;p[4]=testing?local_test.pattern:0;
             if(connected) memcpy(p+5,pro.ds+15,12);
             uint8_t native[64];
             if(current_pro2_mode) {
                 struct pro2_state snapshot=pro2;pro2_report(&snapshot,&pro,(uint32_t)bflb_mtimer_get_time_us(),native);
                 if(snapshot.mode==5) memcpy(p+17,native+49,12);
+                else if(pro2.motion_valid) {
+                    for(unsigned i=0;i<3;i++) {
+                        uint16_t a=(uint16_t)pro2.motion.accel[i],g=(uint16_t)pro2.motion.gyro_corrected[i];
+                        p[17+i*2]=(uint8_t)a;p[18+i*2]=(uint8_t)(a>>8);
+                        p[23+i*2]=(uint8_t)g;p[24+i*2]=(uint8_t)(g>>8);
+                    }
+                }
             } else { switch_pro_report(&pro,now,native);memcpy(p+17,native+13,12); }
             ds5_write_le32(p+29,age);ds5_write_le32(p+33,host_rumble_packets);
             ds5_write_le32(p+37,audio_haptic_packets_sent());

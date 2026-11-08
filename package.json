@@ -1,6 +1,6 @@
 {
   "name": "ds5dongle-switch-pro",
-  "version": "0.1.0-alpha.10",
+  "version": "0.1.0-alpha.12",
   "private": true,
   "scripts": {
     "test": "node --test tests/web.test.mjs",

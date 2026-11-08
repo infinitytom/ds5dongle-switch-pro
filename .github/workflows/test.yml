@@ -33,12 +33,16 @@ jobs:
           ./build-tests/switch-pro-test
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -g -Isrc tests/xbox_test.c src/xbox.c -o build-tests/xbox-test
           ./build-tests/xbox-test
-          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -g -Isrc tests/pro2_test.c src/pro2.c src/ns2_pairing_crypto.c src/xbox.c src/switch_pro.c -lm -o build-tests/pro2-test
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -g -Isrc tests/pro2_test.c src/pro2.c src/pro2_motion.c src/ns2_motion_pdu.c src/ns2_pairing_crypto.c src/xbox.c src/switch_pro.c -lm -o build-tests/pro2-test
           ./build-tests/pro2-test
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -g -Isrc tests/switch_test_test.c src/switch_test.c src/switch_pro.c -lm -o build-tests/switch-test
           ./build-tests/switch-test
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -Isrc tests/audio_retry_test.c -o build-tests/audio-retry-test
           ./build-tests/audio-retry-test
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -Isrc tests/pro2_motion_test.c src/pro2_motion.c src/ns2_motion_pdu.c -lm -o build-tests/pro2-motion-test
+          ./build-tests/pro2-motion-test
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -Isrc tests/battery_light_test.c -o build-tests/battery-light-test
+          ./build-tests/battery-light-test
       - run: npm ci
       - run: npm test
       - run: python3 tests/server.test.py

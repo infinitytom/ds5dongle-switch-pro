@@ -1,6 +1,7 @@
 #include "pro2.h"
 #include "ns2_pairing_crypto.h"
 #include <assert.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 static int get16(const uint8_t *p) { return (int16_t)(p[0]|p[1]<<8); }
@@ -10,8 +11,59 @@ static unsigned command(struct pro2_state *s,uint8_t cmd,uint8_t sub,uint8_t pay
     uint8_t p[16]={0};p[0]=cmd;p[1]=0x91;p[3]=sub;p[5]=4;p[8]=payload;
     return pro2_command(s,p,12,out);
 }
+static void native_extension_tests(void)
+{
+    struct pro2_state s;struct switch_pro in;uint8_t mac[6]={2},reply[PRO2_REPLY_MAX],report[64];
+    pro2_init(&s);switch_pro_init(&in,mac);
+    assert(command(&s,0x0c,4,0x27,reply)==12);
+    memset(in.ds,0,63);memset(in.ds,128,4);in.ds[7]=8;in.ds[24]=0x20; /* DS Y=+1g. */
+    for(unsigned n=1;n<=50;n++) {
+        uint32_t stamp=n*12000;for(unsigned b=0;b<4;b++)in.ds[27+b]=(uint8_t)(stamp>>(b*8));
+        pro2_input(&s,&in,false,n*4000);
+    }
+    pro2_report(&s,&in,200000,report);assert(report[0]==9&&report[15]==30);
+    assert((int)get32(report+16+24)==282472448); /* independent 1g PDU scale. */
+    uint8_t held[30];memcpy(held,report+16,30);pro2_report(&s,&in,204000,report);
+    assert(!memcmp(held,report+16,30)); /* Polling alone cannot invent motion. */
+    in.ds[17]=0x40;in.ds[18]=6; /* DS yaw +100 deg/s. */
+    for(unsigned n=51;n<=300;n++) {
+        uint32_t stamp=n*12000;for(unsigned b=0;b<4;b++)in.ds[27+b]=(uint8_t)(stamp>>(b*8));
+        pro2_input(&s,&in,true,n*4000);
+    }
+    assert(fabsf(s.motion.quaternion[2])>.5f); /* physical DS Y -> Pro2 Z. */
+    in.ds[9]=0xc0;pro2_report(&s,&in,1200000,report);assert((report[5]&12)==12);
+    assert(command(&s,3,10,5,reply)==8);pro2_report(&s,&in,1200000,report);
+    assert((report[8]&3)==3&&!(report[7]&3)); /* Paddles never become dpad. */
+    pro2_input(&s,&in,false,1204000);pro2_report(&s,&in,1204000,report);assert(!(report[8]&3));
+    pro2_disconnect(&s);assert(!s.motion_valid&&!s.motion.initialized&&!s.edge);
+    assert(command(&s,3,10,9,reply)==8);pro2_report(&s,&in,0,report);assert(!report[15]);
+    /* Native 42-byte and SDL 64-byte rumble share identical payload decoding. */
+    uint8_t rumble[64]={2,0x50};rumble[17]=0x50;rumble[2]=0x87;rumble[3]=1;rumble[4]=0x20;rumble[5]=0x11;
+    uint8_t a[48],b[48];assert(pro2_rumble(&s,rumble,42,a)&&pro2_rumble(&s,rumble,64,b)&&!memcmp(a,b,48));
+    assert(!a[3]&&!a[4]); /* Nonzero frequency with zero amplitudes must not buzz. */
+    for(unsigned n=0;n<23;n++)assert(!pro2_rumble(&s,rumble,n,a));
+    /* Player assignment is emitted as a valid USB-output bridge report. */
+    uint8_t led[16]={9,0x91,0,7,0,8,0,0,3};assert(pro2_command(&s,led,16,reply)==8);
+    assert(pro2_take_led(&s,a)&&a[0]==2&&a[2]==0x10&&a[44]==10);
+    assert(!a[1]&&!a[3]&&!a[4]&&!pro2_take_led(&s,a));
+    /* FS split calibration write, readback, factory protection, RX reset. */
+    uint8_t write[80]={2,0x91,0,5,0,72,0,0};write[12]=0;write[13]=0xc0;write[14]=0x1f;
+    for(unsigned i=16;i<80;i++)write[i]=(uint8_t)i;
+    struct pro2_rx rx={0};assert(!pro2_rx_feed(&rx,write,64));
+    assert(pro2_rx_feed(&rx,write+64,16)==80&&pro2_command(&s,rx.data,80,reply)==16);
+    assert(s.calibration_dirty&&!memcmp(s.user_calibration,write+16,64));
+    uint8_t read[16]={2,0x91,0,4,0,8,0,0,64,0,0,0,0,0xc0,0x1f};
+    assert(pro2_command(&s,read,16,reply)==80&&!memcmp(reply+16,write+16,64));
+    write[12]=0x70;struct pro2_state before=s;assert(!pro2_command(&s,write,80,reply)&&!memcmp(&s,&before,sizeof(s)));
+    write[12]=0;write[13]=0x30;write[14]=1;assert(!pro2_command(&s,write,80,reply));
+    memset(&rx,0,sizeof(rx));assert(!pro2_rx_feed(&rx,write,64));
+    memset(&rx,0,sizeof(rx));assert(!pro2_rx_feed(&rx,write+64,16));
+    read[8]=9;read[12]=0xa8;read[13]=0x30;read[14]=1;
+    assert(pro2_command(&s,read,16,reply)==25&&reply[16]==0&&reply[17]==8&&reply[18]==128);
+}
 int main(void)
 {
+    native_extension_tests();
     struct pro2_state s;struct switch_pro in;uint8_t reply[PRO2_REPLY_MAX],report[64];
     const uint8_t mac[6]={2,3,4,5,6,7};switch_pro_init(&in,mac);pro2_init(&s);
     assert(s.mode==9 && s.streaming);

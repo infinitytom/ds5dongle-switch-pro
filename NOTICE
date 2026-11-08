@@ -56,6 +56,13 @@ derived from the following third-party works:
    https://github.com/notsosaelin/PicoSwitch2/tree/v1.3.0
    Native USB EP0, pairing and initialization behavior in src/pro2.c is
    adapted from its hardware-validated src/switch_pro2/switch_pro2.c.
+   src/pro2_motion.c/.h, src/ns2_motion_pdu.c/.h and
+   tests/pro2_motion_test.c adapt the motion translator, the length-30 PDU
+   subset and tests from commit e054bfd1311289f392069ff0d2447e01748c2124.
+   Changes: minimal local input type, no Pico dependencies, signed gyro
+   shifts replaced with multiplication for portable C, only length-30 PDU
+   helpers retained. src/pro2.c also uses its captured factory data and
+   runtime LED/input/report framing references.
    Apache license text: lib/PicoSwitch2-APACHE-2.0.txt.
 
 8. Dycool/NS-PC-Control (GPL-3.0)
