@@ -22,6 +22,10 @@
 
 
 #define BT_INQUIRY_LEN         5
+static volatile uint8_t last_disconnect_reason=0xff;
+static volatile uint32_t disconnect_count;
+uint8_t bt_hid_host_last_disconnect_reason(void) { return last_disconnect_reason; }
+uint32_t bt_hid_host_disconnect_count(void) { return disconnect_count; }
 #define BT_MAX_DISCOVERED      8
 #define L2CAP_BR_MTU           672
 
@@ -915,6 +919,7 @@ static void conn_disconnected(struct bt_conn *conn, uint8_t reason)
     const char *r_str = reason == 0x08 ? "CONN_TIMEOUT" :
                         reason == 0x13 ? "REMOTE_USER" :
                         reason == 0x16 ? "LOCAL_HOST" : "OTHER";
+    last_disconnect_reason=reason;++disconnect_count;
     LOG_INF("[BT] Disconnected reason=0x%02x (%s)\n", reason, r_str);
 
     bt_conn_unref(hid_ctx.conn);
@@ -1761,6 +1766,7 @@ void bt_hid_host_disconnect(void)
 
 void bt_hid_host_force_disconnect(void)
 {
+    if(hid_ctx.conn) { last_disconnect_reason=0x16;++disconnect_count; }
     LOG_WRN("[BT] Force disconnect — HID cleanup, conn=%p\n", hid_ctx.conn);
 
     hid_ctx.ctrl_connected = false;

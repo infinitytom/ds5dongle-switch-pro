@@ -59,6 +59,9 @@ static volatile bool bt_init_done = false;
 
 static volatile uint8_t cached_battery_level = 0xFF;
 static volatile uint8_t cached_battery_state = 0;
+static volatile uint8_t last_disconnect_battery=0xff, last_disconnect_battery_state;
+uint8_t get_last_disconnect_battery(void) { return last_disconnect_battery; }
+uint8_t get_last_disconnect_battery_state(void) { return last_disconnect_battery_state; }
 
 /* LED auto-off timers */
 #define LED_DISABLE_OFF_US   (60ULL * 1000000ULL)  /* 1 minute */
@@ -348,6 +351,8 @@ static void on_hid_state(enum bt_hid_host_state state)
                                             (since_out < 5000000ULL);
         }
         if (ds5_connected) {
+            last_disconnect_battery=cached_battery_level;
+            last_disconnect_battery_state=cached_battery_state;
             ds5_connected = false;
             battery_low = false;
             cached_battery_level = 0xFF;

@@ -151,6 +151,7 @@ function resetLiveStatus(){
   $('active-mode').textContent='尚未连接';$('mode-detail').textContent='连接后读取运行模式';
   $('bt-state').textContent='未连接';$('input-age').textContent='等待接收器连接';
   $('battery').textContent='—';$('rssi').textContent='—';
+  for(const id of ['disconnect-reason','disconnect-battery','disconnect-count'])$(id).textContent='—';
 }
 function updateInput(raw){
   if(!raw||raw.length<10){$('live-badge').textContent='旧固件无实时诊断';return;}
@@ -179,6 +180,12 @@ function renderStatus(s){
   $('report-value').textContent=s.extended?`0x${s.reportMode.toString(16).toUpperCase()}`:'旧固件未提供';
   $('commands-value').textContent=s.extended?String(s.commands):'—';$('reports-value').textContent=s.extended?String(s.reports):'—';$('replies-value').textContent=s.extended?String(s.replies):'—';
   $('save-value').textContent=s.extended?['未确认 / 待保存','正在写入闪存','已写入闪存','闪存保存失败'][s.saveStatus]||'未知':'旧固件无回执';
+  const history=s.linkHistory;
+  $('disconnect-reason').textContent=!history?'需 r9 固件':!history.disconnects?'本次上电未记录断线':
+    ({8:'蓝牙连接超时',19:'对端终止连接',22:'本机终止 / 强制清理'}[history.reason]||
+     (history.reason===null?'原因未知':`HCI 0x${history.reason.toString(16).padStart(2,'0')}`));
+  $('disconnect-battery').textContent=history?.disconnects?(history.battery===null?'未取得断线前电量':`${history.battery}% · ${history.batteryState===0?'电池供电':history.batteryState===1?'正在充电':'状态 '+history.batteryState}`):'—';
+  $('disconnect-count').textContent=history?`${history.disconnects} 次（接收器本次上电）`:'需 r9 固件';
   $('mic-state').textContent=s.extended&&s.flags&2?'主机已打开音频输入':mode===4?'已启用 USB 麦克风接口':'未打开麦克风流';
   $('mic-frames').textContent=s.extended?String(s.micFrames):'—';$('mic-device-level').textContent=s.extended?`${Math.round((s.flags&4?s.micPeak:0)/32768*100)}%`:'—';
 }
@@ -266,7 +273,7 @@ $('import').onchange=e=>run(async()=>{
   if(json.format!=='ds5-local-v1'||!Array.isArray(json.bytes)||json.bytes.some(x=>!Number.isInteger(x)||x<0||x>255))throw Error('无效的配置文件');
   showConfig(encode(original,decode(new Uint8Array(json.bytes))));announce('配置已载入表单','点击「保存并应用」后才会写入接收器。');
 });
-$('diagnostic-export').onclick=()=>download('ds5-diagnostics.json',{app:'alpha.9',time:new Date().toISOString(),firmware,usb:device?{vendorId:device.vendorId,productId:device.productId,productName:device.productName}:null,config:original?decode(original):null,diagnostic,motionDiagnostic,events});
+$('diagnostic-export').onclick=()=>download('ds5-diagnostics.json',{app:'alpha.10',time:new Date().toISOString(),firmware,usb:device?{vendorId:device.vendorId,productId:device.productId,productName:device.productName}:null,config:original?decode(original):null,diagnostic,motionDiagnostic,events});
 
 $('readmap').onclick=()=>run(async()=>{
   await send(0xfb,new Uint8Array([3,Number($('profile').value)]));

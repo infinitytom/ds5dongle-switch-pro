@@ -1563,10 +1563,10 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id,
             *len  = 1 + cfg_len;
             LOG_INF("[USB] GET_REPORT(0xF7) → config %u bytes\n", cfg_len);
         } else if (report_id == 0xF8) {
-            uint16_t ver_len = strlen(FIRMWARE_VERSION " Pro-dev1 r8");
+            uint16_t ver_len = strlen(FIRMWARE_VERSION " Pro-dev1 r9");
             if (ver_len > FEATURE_DATA_MAX)
                 ver_len = FEATURE_DATA_MAX;
-            memcpy(feature_resp_buf + 1, FIRMWARE_VERSION " Pro-dev1 r8", ver_len);
+            memcpy(feature_resp_buf + 1, FIRMWARE_VERSION " Pro-dev1 r9", ver_len);
             *data = feature_resp_buf;
             *len  = 1 + ver_len;
             LOG_INF("[USB] GET_REPORT(0xF8) → firmware version\n");
@@ -1618,7 +1618,15 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id,
             ds5_write_le32(feature_resp_buf+48, pro_reply_count);
             feature_resp_buf[52] = 63 | ((current_switch_mode || current_pro2_mode)?64:0);
             feature_resp_buf[53] = config_save_status;
-            *len = 54;
+            extern uint8_t get_last_disconnect_battery(void);
+            extern uint8_t get_last_disconnect_battery_state(void);
+            feature_resp_buf[54]=0xd9;
+            feature_resp_buf[55]=bt_hid_host_last_disconnect_reason();
+            feature_resp_buf[56]=get_last_disconnect_battery();
+            feature_resp_buf[57]=get_last_disconnect_battery_state();
+            ds5_write_le32(feature_resp_buf+58,bt_hid_host_disconnect_count());
+            feature_resp_buf[62]=(uint8_t)bt_hid_host_get_state();feature_resp_buf[63]=1;
+            *len = 64;
         } else if (report_id == 0xFA) {
             uint8_t *p=feature_resp_buf+1;memset(p,0,63);p[0]=0xa8;p[1]=1;
             uint32_t now=(uint32_t)(bflb_mtimer_get_time_us()/1000);

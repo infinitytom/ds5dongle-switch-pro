@@ -1,4 +1,5 @@
 #include "audio.h"
+#include "audio_retry.h"
 #include "ds5_usb_audio.h"
 #include "bt_hid_host.h"
 #include "ds5_protocol.h"
@@ -493,6 +494,7 @@ void audio_task(void *arg)
     LOG_INF("[AUDIO] Task started\n");
 
     uint32_t send_fail_streak = 0;
+    uint32_t pro_send_failures = 0;
     uint64_t pro_next_us = 0;
 
     for (;;) {
@@ -508,20 +510,20 @@ void audio_task(void *arg)
         }
         if (usb_gamepad_switch_mode()) {
             uint64_t now = bflb_mtimer_get_time_us();
-            if (bt_hid_host_get_state() == BT_HID_STATE_CONNECTED && now >= pro_next_us) {
+            if (bt_hid_host_get_state() != BT_HID_STATE_CONNECTED) {
+                pro_send_failures=0;pro_next_us=0;
+            } else if (now >= pro_next_us) {
                 /* 64 stereo samples at 3kHz = 21 1/3ms per BT packet.
                  * No Opus work and no USB Audio stream needed in Pro mode. */
                 for (unsigned slot = 0; slot < 2; ++slot)
                     usb_gamepad_switch_render((uint32_t)(now / 1000),
                         config_get()->haptics_gain, haptic_slots[slot], 32);
-                if (send_audio_report() != 0) {
-                    if (++send_fail_streak >= AUDIO_SEND_FAIL_MAX) {
-                        bt_hid_host_disconnect();
-                        send_fail_streak = 0;
-                    }
-                } else send_fail_streak = 0;
-                pro_next_us = pro_next_us ? pro_next_us + 21333 : now + 21333;
-                if (pro_next_us < now) pro_next_us = now + 21333;
+                int result=send_audio_report();
+                uint32_t retry=pro_audio_retry_delay_us(&pro_send_failures,result);
+                if(result && pro_send_failures==3)
+                    LOG_WRN("[AUDIO] Pro TX congestion; backing off without disconnecting input\n");
+                /* Schedule from this attempt, never catch up stale haptics. */
+                pro_next_us = now + retry;
             }
             vTaskDelay(pdMS_TO_TICKS(1));
             continue;

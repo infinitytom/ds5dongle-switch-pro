@@ -19,3 +19,11 @@ test('decode independent motion, host activation and bounded test diagnostics',(
  const m=decodeMotionStatus(b);assert.equal(m.connected,true);assert.equal(m.imuEnabled,true);assert.equal(m.fullReport,true);assert.equal(m.testActive,true);assert.equal(m.testPattern,2);assert.equal(m.raw[0],-2457);assert.equal(m.native[5],72);assert.equal(m.rumblePackets,42);assert.equal(m.btPackets,900);assert.equal(m.btFailures,3);assert.equal(m.remaining,600);
  assert.throws(()=>decodeMotionStatus(b.slice(0,62)));b[1]=2;assert.throws(()=>decodeMotionStatus(b));
 });
+
+test('decode retained link history without confusing legacy padding or unknown battery',()=>{
+ const b=new Uint8Array(63),v=new DataView(b.buffer);b[13]=0xd5;b[14]=2;b[53]=0xd9;b[54]=8;b[55]=60;b[56]=0;v.setUint32(57,3,true);b[61]=7;b[62]=1;
+ assert.deepEqual(decodeStatus(b).linkHistory,{reason:8,battery:60,batteryState:0,disconnects:3,state:7});
+ b[54]=b[55]=255;assert.equal(decodeStatus(b).linkHistory.reason,null);assert.equal(decodeStatus(b).linkHistory.battery,null);
+ assert.equal(decodeStatus(b.slice(0,53)).linkHistory,undefined);
+ b[62]=2;assert.equal(decodeStatus(b).linkHistory,undefined);
+});

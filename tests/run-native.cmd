@@ -26,3 +26,8 @@ if errorlevel 1 exit /b 1
 cl /nologo /W4 /WX /std:c11 /Isrc tests\switch_test_test.c src\switch_test.c src\switch_pro.c /Fo:build-tests\ /Fe:build-tests\switch_test_test.exe
 if errorlevel 1 exit /b 1
 build-tests\switch_test_test.exe
+
+if errorlevel 1 exit /b 1
+cl /nologo /W4 /WX /std:c11 /Isrc tests\audio_retry_test.c /Fo:build-tests\ /Fe:build-tests\audio_retry_test.exe
+if errorlevel 1 exit /b 1
+build-tests\audio_retry_test.exe

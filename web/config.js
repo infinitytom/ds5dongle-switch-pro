@@ -52,6 +52,9 @@ export function decodeStatus(bytes) {
      commands:v.getUint32(19,true),reports:v.getUint32(23,true),micFrames:v.getUint32(27,true),
      input:[...bytes.slice(31,41)],micPeak:v.getUint16(41,true),inputAge:v.getUint32(43,true),
      replies:v.getUint32(47,true),capabilities:bytes[51],saveStatus:bytes[52]});
+   if(bytes.length>=63&&bytes[53]===0xd9&&bytes[62]===1)result.linkHistory={
+     reason:bytes[54]===255?null:bytes[54],battery:bytes[55]===255?null:bytes[55],
+     batteryState:bytes[56],disconnects:v.getUint32(57,true),state:bytes[61]};
  }
  return result;
 }

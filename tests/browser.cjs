@@ -15,8 +15,8 @@ const assert=require('node:assert/strict');
        if(window.failReport===id)throw Error('fixture read failed');
        let data;
        if(id===0xf7)data=new Uint8Array([id,...cfg]);
-       if(id===0xf8)data=new Uint8Array([id,...new TextEncoder().encode(window.legacyFirmware?'TEST Pro-dev1':'TEST Pro-dev1 r8')]);
-       if(id===0xf9){data=new Uint8Array(54);data[0]=id;data[1]=210;data[12]=80;data[14]=0xd5;data[15]=2;data[16]=activeMode;data[17]=1;data[18]=[3,4].includes(activeMode)?0x30:activeMode===6?9:activeMode===5?0:1;data[19]=1;data[32]=data[33]=data[34]=data[35]=128;data[39]=8;data[52]=window.noXbox?7:window.noPro2?31:window.noMotion?63:127;data[53]=saveStatus;}
+       if(id===0xf8)data=new Uint8Array([id,...new TextEncoder().encode(window.legacyFirmware?'TEST Pro-dev1':'TEST Pro-dev1 r9')]);
+       if(id===0xf9){data=new Uint8Array(64);data[0]=id;data[1]=210;data[12]=80;data[14]=0xd5;data[15]=2;data[16]=activeMode;data[17]=1;data[18]=[3,4].includes(activeMode)?0x30:activeMode===6?9:activeMode===5?0:1;data[19]=1;data[32]=data[33]=data[34]=data[35]=128;data[39]=8;data[52]=window.noXbox?7:window.noPro2?31:window.noMotion?63:127;data[53]=saveStatus;data[54]=0xd9;data[55]=8;data[56]=60;data[58]=1;data[62]=7;data[63]=1;}
        if(id===0xfa){
          data=new Uint8Array(64);data[0]=id;data[1]=0xa8;data[2]=1;
          const remaining=Math.max(0,testUntil-Date.now());data[3]=55|(remaining?8:0);data[4]=0x30;data[5]=remaining?testPattern:0;
@@ -43,6 +43,8 @@ const assert=require('node:assert/strict');
  });
  await page.goto(process.env.TEST_URL||'http://127.0.0.1:8765');await page.getByRole('button',{name:'连接接收器',exact:true}).click();
  await page.waitForFunction(()=>!document.getElementById('save').disabled);
+ assert.equal(await page.locator('#disconnect-reason').innerText(),'蓝牙连接超时');
+ assert.match(await page.locator('#disconnect-battery').innerText(),/60%/);
  const proFilter=await page.evaluate(()=>window.hidFilters.find(f=>f.productId===0x2009));
  assert.equal(proFilter.usagePage,0xff00);assert.equal(proFilter.usage,1);
  const xboxFilter=await page.evaluate(()=>window.hidFilters.find(f=>f.vendorId===0x045e));

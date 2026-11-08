@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+uint8_t bt_hid_host_last_disconnect_reason(void);
+uint32_t bt_hid_host_disconnect_count(void);
 
 #define HID_PSM_CONTROL    0x0011
 #define HID_PSM_INTERRUPT  0x0013

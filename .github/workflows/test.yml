@@ -37,6 +37,8 @@ jobs:
           ./build-tests/pro2-test
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -g -Isrc tests/switch_test_test.c src/switch_test.c src/switch_pro.c -lm -o build-tests/switch-test
           ./build-tests/switch-test
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -Isrc tests/audio_retry_test.c -o build-tests/audio-retry-test
+          ./build-tests/audio-retry-test
       - run: npm ci
       - run: npm test
       - run: python3 tests/server.test.py
