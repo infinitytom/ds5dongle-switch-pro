@@ -29,6 +29,8 @@ jobs:
       - name: Native protocol tests with sanitizers
         run: |
           mkdir -p build-tests
+          cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -Isrc tests/mode_shortcut_test.c -o build-tests/mode-shortcut-test
+          ./build-tests/mode-shortcut-test
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -g -Isrc tests/switch_pro_test.c src/switch_pro.c src/switch_usb.c -lm -o build-tests/switch-pro-test
           ./build-tests/switch-pro-test
           cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer -g -Isrc tests/xbox_test.c src/xbox.c -o build-tests/xbox-test

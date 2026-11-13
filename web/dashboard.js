@@ -296,7 +296,7 @@ $('import').onchange=e=>run(async()=>{
   if(json.format!=='ds5-local-v1'||!Array.isArray(json.bytes)||json.bytes.some(x=>!Number.isInteger(x)||x<0||x>255))throw Error('无效的配置文件');
   showConfig(encode(original,decode(new Uint8Array(json.bytes))));announce('配置已载入表单','点击「保存并应用」后才会写入接收器。');
 });
-$('diagnostic-export').onclick=()=>download('ds5-diagnostics.json',{app:'alpha.12',time:new Date().toISOString(),firmware,usb:device?{vendorId:device.vendorId,productId:device.productId,productName:device.productName}:null,config:original?decode(original):null,diagnostic,motionDiagnostic,events});
+$('diagnostic-export').onclick=()=>download('ds5-diagnostics.json',{app:'alpha.13',time:new Date().toISOString(),firmware,usb:device?{vendorId:device.vendorId,productId:device.productId,productName:device.productName}:null,config:original?decode(original):null,diagnostic,motionDiagnostic,events});
 
 $('readmap').onclick=()=>run(async()=>{
   await send(0xfb,new Uint8Array([3,Number($('profile').value)]));

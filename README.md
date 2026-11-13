@@ -104,7 +104,7 @@ Windows 可运行 `tests\run-native.cmd`（Visual Studio C++ Build Tools）。�
 
 本地生成包含准确源码快照的测试包（不提交、不发布、不刷写）：`py -3 tools/package_release.py --local-preview`。正式打包仍要求工作区已提交。
 
-### 组合键切换与自动连接
+### 组合键切换与自动连接（alpha.13 / r12）
 
 同时长按 **PS + Options + 下表按键 2 秒**，直接切换到指定模式：
 
