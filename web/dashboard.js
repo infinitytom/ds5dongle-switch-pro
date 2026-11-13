@@ -231,6 +231,24 @@ $('connect').onclick=()=>run(async()=>{
 });
 $('refresh').onclick=()=>run(read);
 
+let autoConnecting=false;
+async function autoConnect(){
+  if(autoConnecting||busy||polling||pendingMode!==null||(device?.opened&&original)||!navigator.hid?.getDevices)return;
+  autoConnecting=true;
+  try{
+    const granted=await navigator.hid.getDevices();
+    for(const candidate of granted.filter(supportsConfig)){
+      if(busy||polling||pendingMode!==null||(device?.opened&&original))break;
+      busy=true;enableControls();
+      try{await connectTo(candidate);break;}
+      catch{try{await candidate.close();}catch{}clearReadState();}
+      finally{busy=false;enableControls();}
+    }
+  }catch{/* Retry when permission or availability changes. */}
+  finally{autoConnecting=false;}
+}
+setInterval(autoConnect,2000);
+
 async function reconnectScan(){
   if(pendingMode===null)return;
   if(Date.now()>reconnectUntil){announce('等待新模式授权','若浏览器尚未授权此 USB 身份，请点击右上角「授权新模式接收器」。','warning');enableControls();return;}
@@ -293,9 +311,9 @@ $('activemap').onclick=()=>run(async()=>{await send(0xfb,new Uint8Array([5,Numbe
 
 navigator.hid?.addEventListener('disconnect',e=>{
   if(e.device!==device)return;++readGeneration;stopAudio();clearReadState();enableControls();
-  if(pendingMode===null){announce('USB 接收器已断开','重新接入后点击「连接接收器」。','warning');log('USB 设备断开');}
+  if(pendingMode===null){announce('USB 接收器已断开','重新接入后将自动连接；新模式身份首次使用需点击授权。','warning');log('USB 设备断开');}
 });
-navigator.hid?.addEventListener('connect',()=>{if(pendingMode!==null){clearTimeout(reconnectTimer);reconnectTimer=setTimeout(reconnectScan,150);}});
+navigator.hid?.addEventListener('connect',()=>{if(pendingMode!==null){clearTimeout(reconnectTimer);reconnectTimer=setTimeout(reconnectScan,150);}else{autoConnect();}});
 setInterval(async()=>{
   if(busy||polling||!original||!device?.opened||pendingMode!==null)return;
   polling=true;
@@ -347,3 +365,4 @@ window.addEventListener('pagehide',stopAudio);
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&audioStream)stopAudio();});
 enableControls();
 if(!navigator.hid)announce('浏览器不支持 WebHID','请使用桌面 Chrome / Edge 打开本机配置地址。','warning');
+else autoConnect();

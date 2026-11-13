@@ -14,6 +14,7 @@
 #include "led_status.h"
 #include "state_mgr.h"
 #include "config.h"
+#include "mode_shortcut.h"
 #include "dse.h"
 #include "remap.h"
 #include "battery_light.h"
@@ -1094,6 +1095,7 @@ static void usb_task(void *arg)
     uint64_t last_activity_us = bflb_mtimer_get_time_us();
     uint64_t last_input_us    = bflb_mtimer_get_time_us();
     bool inactive_disconnected = false;
+    struct mode_shortcut mode_combo = {0};
     uint32_t usb_check_cnt = 0;
 
 #define CONN_WATCHDOG_US (3ULL * 1000000ULL)  /* 3 seconds without input → force disconnect */
@@ -1163,6 +1165,32 @@ static void usb_task(void *arg)
             else if ((usb_fwd_count % 500) == 0)
                 LOG_DBG("[USB-FWD] %lu reports forwarded\n",
                        (unsigned long)usb_fwd_count);
+
+            /* Physical shortcut precedes remapping and other shortcuts. */
+            bool mode_ps = (raw_report[2 + DS5_BTN_PS_BYTE] & DS5_BTN_PS_BIT) != 0;
+            bool mode_options = (raw_report[2 + DS5_BTN_BYTE] & DS5_BTN_OPTIONS_BIT) != 0;
+            int mode_target = mode_shortcut_update(&mode_combo, mode_ps, mode_options,
+                mode_shortcut_target(raw_report[2 + 7]), last_input_us);
+            if (mode_ps && mode_options) {
+                ps_debounced = false;
+                ps_was_pressed = false;
+                ps_key_scheduled = false;
+                raw_report[2 + DS5_BTN_PS_BYTE] &= ~DS5_BTN_PS_BIT;
+                raw_report[2 + DS5_BTN_BYTE] &= ~DS5_BTN_OPTIONS_BIT;
+                raw_report[2 + 7] = 0x08; /* Suppress face buttons and D-pad. */
+            }
+            if (mode_target >= 0 && mode_target != config_controller_mode()) {
+                uint8_t previous = config_get()->controller_mode;
+                config_get()->controller_mode = (uint8_t)mode_target;
+                if (config_save()) {
+                    LOG_INF("[MODE] Shortcut: %u -> %u\n", previous, config_controller_mode());
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    GLB_SW_System_Reset();
+                } else {
+                    config_get()->controller_mode = previous;
+                    LOG_ERR("[MODE] Save failed; keeping mode %u\n", previous);
+                }
+            }
 
             /* Volume combo: Options(≡) + D-pad Up/Down → Consumer Control Vol.
              * Detect BEFORE remap so we can suppress both buttons from gamepad. */
@@ -1383,6 +1411,7 @@ static void usb_task(void *arg)
         }
 
         if (!ds5_connected) {
+            mode_combo = (struct mode_shortcut){0};
             last_activity_us = bflb_mtimer_get_time_us();
             inactive_disconnected = false;
             ps_debounced = false;
