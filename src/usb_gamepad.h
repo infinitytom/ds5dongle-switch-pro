@@ -32,6 +32,7 @@ bool usb_gamepad_is_ready(void);
 bool usb_gamepad_switch_mode(void);
 bool usb_gamepad_xbox_mode(void);
 bool usb_gamepad_pro2_mode(void);
+uint8_t usb_gamepad_current_mode(void);
 void usb_gamepad_audio_stream_changed(bool active);
 void usb_gamepad_on_bt_disconnect(void);
 void usb_gamepad_switch_render(uint32_t ms, float gain, int8_t *stereo, unsigned frames);

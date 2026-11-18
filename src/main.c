@@ -15,6 +15,7 @@
 #include "state_mgr.h"
 #include "config.h"
 #include "mode_shortcut.h"
+#include "bond_reconnect.h"
 #include "dse.h"
 #include "remap.h"
 #include "battery_light.h"
@@ -44,7 +45,6 @@
 #define LED_TASK_PRIORITY     (tskIDLE_PRIORITY + 1)
 #define BOOT_HOLD_TICKS      30   /* 30 x 100ms = 3 seconds */
 #define BOOT_CLICK_WINDOW    5    /* 500ms window between clicks */
-#define RECONNECT_TIMEOUT_MS 2000
 #define HANDSHAKE_TIMEOUT_US  (10ULL * 1000000ULL)
 #define CONNECTING_TIMEOUT_TICKS pdMS_TO_TICKS(8000)
 #define L2CAP_FALLBACK_TIMEOUT_TICKS pdMS_TO_TICKS(3000)
@@ -125,14 +125,6 @@ static void apply_config_overlay(uint8_t *d, uint16_t len)
  * set_state_data: 47 bytes of SetStateData
  * seq: sequence counter
  * out: 78-byte output buffer */
-static bool controller_light_color(uint8_t rgb[3])
-{
-    struct config_body *cfg=config_get();
-    const uint8_t configured[3]={cfg->led_r,cfg->led_g,cfg->led_b};
-    return battery_light_color(cfg->controller_mode,cached_battery_level,
-                               cached_battery_state,configured,rgb);
-}
-
 static void build_bt_output(const uint8_t *set_state_data, uint16_t len,
                             uint8_t seq, uint8_t *out)
 {
@@ -143,11 +135,8 @@ static void build_bt_output(const uint8_t *set_state_data, uint16_t len,
     if (len > DS5_USB_OUTPUT_PAYLOAD_LEN)
         len = DS5_USB_OUTPUT_PAYLOAD_LEN;
     memcpy(out + 3, set_state_data, len);
-    uint8_t rgb[3];
-    if(controller_light_color(rgb)) {
-        out[4]=(out[4]&~0x08)|0x04; /* battery color owns ResetLights too */
-        memcpy(out+3+44,rgb,3);
-    }
+    controller_lights_apply(out+3,len,usb_gamepad_current_mode(),
+                            cached_battery_level,cached_battery_state);
 
     uint32_t crc = ds5_crc32(DS5_BT_OUTPUT_CRC_SEED, out,
                              DS5_BT_OUTPUT_REPORT_SIZE - 4);
@@ -167,10 +156,8 @@ static void build_bt_output_ext(const uint8_t *set_state_data, uint16_t len,
     if (len > DS5_BT_OUTPUT_EXT_PAYLOAD)
         len = DS5_BT_OUTPUT_EXT_PAYLOAD;
     memcpy(out + 4, set_state_data, len);
-    uint8_t rgb[3];
-    if(controller_light_color(rgb) && len>=DS5_USB_OUTPUT_PAYLOAD_LEN) {
-        out[5]|=0x04;memcpy(out+4+44,rgb,3);
-    }
+    controller_lights_apply(out+4,len,usb_gamepad_current_mode(),
+                            cached_battery_level,cached_battery_state);
 
     uint32_t crc = ds5_crc32(DS5_BT_OUTPUT_CRC_SEED, out,
                              DS5_BT_OUTPUT_EXT_SIZE - 4);
@@ -587,20 +574,8 @@ static void bt_task(void *arg)
     led_status_set(LED_PURPLE_BLINK_SLOW);
     LOG_INF("[BT_TASK] led OK\n");
 
-    LOG_INF("[BT_TASK] try_reconnect...\n");
-    if (bt_hid_host_try_reconnect() == 0) {
-        /* Passive reconnect: page scan is enabled, wait for the
-         * controller to page us and create L2CAP channels. */
-        LOG_INF("[MAIN] Waiting for controller to reconnect...\n");
-        TickType_t start = xTaskGetTickCount();
-        while (!ds5_connected &&
-               (xTaskGetTickCount() - start) < pdMS_TO_TICKS(RECONNECT_TIMEOUT_MS)) {
-            vTaskDelay(pdMS_TO_TICKS(100));
-        }
-        if (!ds5_connected) {
-            LOG_WRN("[MAIN] Reconnect timed out, starting scan\n");
-            bt_hid_host_scan_start(0);
-        }
+    if (bt_hid_host_get_bonded_count() > 0) {
+        LOG_INF("[MAIN] Waiting for incoming reconnect, then paging saved peer\n");
     } else {
         LOG_INF("[MAIN] No bonded device, starting scan\n");
         bt_hid_host_scan_start(0);
@@ -608,15 +583,14 @@ static void bt_task(void *arg)
     LOG_INF("[BT_TASK] Entering main loop\n");
 
     uint8_t usb_out[USB_OUTPUT_BUF_SZ];
+    struct bond_reconnect reconnect = {0};
     uint16_t idle_ticks = 0;
     uint16_t loop_count = 0;
     uint64_t disconnecting_since = 0;
     uint64_t stale_conn_since = 0;
     uint16_t scan_retry_ticks = 0;   /* counts idle ticks since last scan */
     uint8_t  scan_fail_count = 0;    /* consecutive scans with 0 results */
-#define MAX_SCAN_RETRIES 2           /* stop active inquiry after N failures;
-                                      * bonded controllers reconnect via page scan
-                                      * (like original DS5Dongle) */
+#define MAX_SCAN_RETRIES 2           /* Bound discovery of new controllers. */
 
     /*
      * Button gesture FSM (polled at 10 Hz, independent of loop speed).
@@ -720,6 +694,7 @@ static void bt_task(void *arg)
                     btn_press_samples = 0;
 
                     if (clicks == 1) {
+                        reconnect = (struct bond_reconnect){0};
                         if (bt_hid_host_get_bonded_count() > 1) {
                             int next = bt_hid_host_switch_next();
                             LOG_INF("[BTN] Single click — switching to controller %d\n", next);
@@ -735,6 +710,7 @@ static void bt_task(void *arg)
                         }
                         idle_ticks = 0;
                     } else if (clicks >= 2) {
+                        reconnect = (struct bond_reconnect){0};
                         LOG_INF("[BTN] Double click — disconnect + fresh scan\n");
                         scan_fail_count = 0;
                         if (ds5_connected) {
@@ -795,6 +771,13 @@ static void bt_task(void *arg)
             continue;
         }
 
+        if (bond_reconnect_due(&reconnect,
+                (uint32_t)(bflb_mtimer_get_time_us() / 1000), ds5_connected,
+                bt_hid_host_get_bonded_count() > 0 &&
+                bt_hid_host_get_state() == BT_HID_STATE_IDLE &&
+                !bt_hid_host_has_pending_conn() && !usb_wake_host_suspended())) {
+            bt_hid_host_try_reconnect();
+        }
         if (bt_hid_host_poll_connect()) {
             idle_ticks = 0;
             continue;
@@ -866,22 +849,23 @@ static void bt_task(void *arg)
         }
 
         if (ds5_connected) {
-            /* Refresh only on a color change, or every five seconds in case
+            /* Refresh on mode/battery changes, or every five seconds in case
              * a congested output queue dropped the prior LED-only packet.
              * Runs in the existing BT output task, not the input callback. */
-            static uint8_t last_rgb[3];
+            static uint8_t last_lights[4];
             static uint64_t last_light_us;
             static uint64_t last_light_attempt_us;
-            uint8_t rgb[3];uint64_t light_now=bflb_mtimer_get_time_us();
-            if((!last_light_attempt_us || light_now-last_light_attempt_us>=1000000ULL) && controller_light_color(rgb) &&
-               (!last_light_us || memcmp(rgb,last_rgb,3) || light_now-last_light_us>=5000000ULL)) {
-                uint8_t payload[DS5_USB_OUTPUT_PAYLOAD_LEN]={0},packet[DS5_BT_OUTPUT_REPORT_SIZE];
+            uint64_t light_now=bflb_mtimer_get_time_us();
+            uint8_t payload[DS5_USB_OUTPUT_PAYLOAD_LEN]={0},packet[DS5_BT_OUTPUT_REPORT_SIZE];
+            controller_lights_apply(payload,sizeof(payload),usb_gamepad_current_mode(),
+                                    cached_battery_level,cached_battery_state);
+            if((!last_light_attempt_us || light_now-last_light_attempt_us>=1000000ULL) &&
+               (!last_light_us || memcmp(payload+43,last_lights,4) || light_now-last_light_us>=5000000ULL)) {
                 last_light_attempt_us=light_now;
-                payload[1]=0x04;memcpy(payload+44,rgb,3);
                 build_bt_output(payload,sizeof(payload),output_seq,packet);
                 output_seq=(output_seq+1)&15;
                 int result=bt_hid_host_send_output(packet,sizeof(packet));
-                if(!result) { memcpy(last_rgb,rgb,3);last_light_us=light_now; }
+                if(!result) { memcpy(last_lights,payload+43,4);last_light_us=light_now; }
             }
             /* Push UAC volume/mute changes to controller immediately */
             if (state_mgr_vol_dirty()) {
@@ -1019,7 +1003,8 @@ next_output_iter:;
                     uint16_t retry_interval = ever_connected ? 600 : 300;
                     if (scan_retry_ticks >= retry_interval) {
                         scan_retry_ticks = 0;
-                        if (scan_fail_count < MAX_SCAN_RETRIES) {
+                        if (bt_hid_host_get_bonded_count() == 0 &&
+                            scan_fail_count < MAX_SCAN_RETRIES) {
                             scan_fail_count++;
                             bt_hid_host_scan_start(0);
                         }
@@ -1177,7 +1162,7 @@ static void usb_task(void *arg)
                 raw_report[2 + DS5_BTN_BYTE] &= ~DS5_BTN_OPTIONS_BIT;
                 raw_report[2 + 7] = 0x08; /* Suppress face buttons and D-pad. */
             }
-            if (mode_target >= 0 && mode_target != config_controller_mode()) {
+            if (mode_target >= 0 && mode_target != usb_gamepad_current_mode()) {
                 uint8_t previous = config_get()->controller_mode;
                 config_get()->controller_mode = (uint8_t)mode_target;
                 if (config_save()) {

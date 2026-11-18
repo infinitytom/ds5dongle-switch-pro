@@ -6,6 +6,10 @@ test('packed config preserves unknown fields, dse_detected and tail',()=>{const 
 test('reject unsupported layouts and unsafe numeric writes',()=>{assert.throws(()=>decode(new Uint8Array(29)));assert.throws(()=>decode(new Uint8Array([2])));const bytes=config();for(const v of [NaN,Infinity,7,-1,1.5])assert.throws(()=>encode(bytes,{...decode(bytes),controller_mode:v}));assert.equal(encode(bytes,{...decode(bytes),controller_mode:4})[12],4);assert.equal(encode(bytes,{...decode(bytes),controller_mode:5})[12],5);assert.equal(encode(bytes,{...decode(bytes),controller_mode:6})[12],6);});
 test('WebHID reports include ID and may have a buffer offset',()=>{const b=new Uint8Array([99,0xf7,2,1,99]);assert.deepEqual([...featurePayload(new DataView(b.buffer,1,3),0xf7)],[2,1]);assert.throws(()=>featurePayload(new DataView(b.buffer),0xf7));});
 test('exclude original controllers without config features',()=>{assert.equal(supportsConfig({collections:[{featureReports:[{reportId:5}]}]}),false);assert.equal(supportsConfig({collections:[{featureReports:[{reportId:0xf7}]}]}),true);});
+test('mode lighting leaves legacy RGB bytes intact during configuration writes',()=>{
+ const bytes=config();bytes.set([12,34,56],22);
+ assert.deepEqual([...encode(bytes,{...decode(bytes),controller_mode:4}).slice(22,25)],[12,34,56]);
+});
 test('decode versioned device diagnostics and retain legacy support',()=>{
  const legacy=new Uint8Array(13);legacy[11]=255;assert.equal(decodeStatus(legacy).battery,null);assert.equal(decodeStatus(legacy).extended,false);
  const b=new Uint8Array(53);const v=new DataView(b.buffer);b[0]=206;b[11]=80;b[13]=0xd5;b[14]=2;b[15]=4;b[16]=1;b[17]=0x30;b[18]=7;v.setUint32(19,10,true);v.setUint32(23,500,true);v.setUint32(27,100,true);b[31]=128;v.setUint16(41,16384,true);b[51]=7;b[52]=2;

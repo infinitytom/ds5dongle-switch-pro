@@ -11,6 +11,10 @@ if exist "C:\BuildTools\Common7\Tools\VsDevCmd.bat" (
 )
 if errorlevel 1 exit /b 1
 :compile
+cl /nologo /W4 /WX /std:c11 /Isrc tests\bond_reconnect_test.c /Fo:build-tests\ /Fe:build-tests\bond_reconnect_test.exe
+if errorlevel 1 exit /b 1
+build-tests\bond_reconnect_test.exe
+if errorlevel 1 exit /b 1
 cl /nologo /W4 /WX /std:c11 /Isrc tests\mode_shortcut_test.c /Fo:build-tests\ /Fe:build-tests\mode_shortcut_test.exe
 if errorlevel 1 exit /b 1
 build-tests\mode_shortcut_test.exe

@@ -89,6 +89,7 @@ static volatile unsigned pro_reply_head, pro_reply_tail;
 bool usb_gamepad_switch_mode(void) { return current_switch_mode; }
 bool usb_gamepad_xbox_mode(void) { return current_xbox_mode; }
 bool usb_gamepad_pro2_mode(void) { return current_pro2_mode; }
+uint8_t usb_gamepad_current_mode(void) { return current_usb_mode; }
 void usb_gamepad_on_bt_disconnect(void)
 {
     local_test.pattern=0;local_test_pending=false;++local_test_epoch;
@@ -1587,10 +1588,10 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id,
             *len  = 1 + cfg_len;
             LOG_INF("[USB] GET_REPORT(0xF7) → config %u bytes\n", cfg_len);
         } else if (report_id == 0xF8) {
-            uint16_t ver_len = strlen(FIRMWARE_VERSION " Pro-dev1 r13");
+            uint16_t ver_len = strlen(FIRMWARE_VERSION " Pro-dev1 r14");
             if (ver_len > FEATURE_DATA_MAX)
                 ver_len = FEATURE_DATA_MAX;
-            memcpy(feature_resp_buf + 1, FIRMWARE_VERSION " Pro-dev1 r13", ver_len);
+            memcpy(feature_resp_buf + 1, FIRMWARE_VERSION " Pro-dev1 r14", ver_len);
             *data = feature_resp_buf;
             *len  = 1 + ver_len;
             LOG_INF("[USB] GET_REPORT(0xF8) → firmware version\n");

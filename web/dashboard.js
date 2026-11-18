@@ -179,6 +179,11 @@ function renderStatus(s){
   $('input-age').textContent=s.extended&&connected?`最近输入 ${s.inputAge} ms 前`:'手柄按住 PS + Create 进入配对';
   $('battery').replaceChildren(document.createTextNode(s.battery===null?'—':String(s.battery)));const percent=document.createElement('em');percent.textContent='%';$('battery').append(percent);
   $('battery-detail').textContent=s.battery===null?'等待手柄电量':s.batteryState===1?'正在充电':s.batteryState===2?'充电完成':'电池供电';
+  if(Number(firmware.match(/Pro-dev1 r(\d+)/)?.[1]||0)>=14){
+    const colors=['蓝','青','白','绿','黄','橙','紫'];
+    if(colors[mode])$('mode-detail').textContent+=` · 两侧${colors[mode]}灯`;
+    if(s.battery!==null)$('battery-detail').textContent+=` · 下方 ${Math.max(1,Math.ceil(s.battery/20))} 灯`;
+  }
   $('rssi').replaceChildren(document.createTextNode(connected?String(s.rssi):'—'));const dbm=document.createElement('em');dbm.textContent='dBm';$('rssi').append(dbm);
   $('signal-detail').textContent=!connected?'等待蓝牙连接':s.rssi>-60?'信号良好':s.rssi>-80?'信号一般':'信号较弱';
   $('live-badge').textContent=s.extended?(connected?'输入监测中':'等待蓝牙输入'):'升级固件启用实时监测';$('live-badge').className=`mini-badge ${s.extended&&connected?'live':''}`;

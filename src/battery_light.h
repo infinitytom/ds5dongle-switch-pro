@@ -12,22 +12,40 @@ static inline uint8_t battery_percent(uint8_t raw)
     return state==2?100:(uint8_t)(level*10);
 }
 
-/* Native Sony modes retain host lighting; default white in Nintendo modes
- * means automatic battery color. A custom RGB remains a fixed-color choice. */
-static inline bool battery_light_color(uint8_t mode,uint8_t percent,uint8_t state,
-                                      const uint8_t configured[3],uint8_t rgb[3])
+/* The vertical light strips identify the actual USB mode in every profile. */
+static inline bool mode_light_color(uint8_t mode, uint8_t rgb[3])
 {
-    if(mode!=3 && mode!=4 && mode!=6)return false;
-    if(configured[0]!=255 || configured[1]!=255 || configured[2]!=255) {
-        for(unsigned i=0;i<3;i++)rgb[i]=configured[i];
-        return true;
-    }
-    if(percent>100 || state>2)return false;
-    rgb[0]=rgb[1]=rgb[2]=0;
-    if(state==1) { rgb[0]=255;rgb[1]=96; } /* charging: amber */
-    else if(state==2 || percent>=60)rgb[1]=160;
-    else if(percent>=30) { rgb[0]=255;rgb[1]=128; }
-    else rgb[0]=255;
+    static const uint8_t colors[7][3] = {
+        {0, 64, 255}, {0, 220, 220}, {255, 255, 255},
+        {0, 180, 0}, {255, 220, 0}, {255, 80, 0}, {180, 0, 255}
+    };
+    if(mode > 6)return false;
+    for(unsigned i=0;i<3;i++)rgb[i]=colors[mode][i];
+    return true;
+}
+
+/* Five white player indicators below the touchpad become battery bars.
+ * Use symmetric Sony patterns with one through five lit dots; unknown is off.
+ * Raw DS battery levels are coarse, so the lowest valid level still shows one. */
+static inline uint8_t battery_player_lights(uint8_t percent, uint8_t state)
+{
+    static const uint8_t patterns[5] = {4, 10, 21, 27, 31};
+    if(percent>100 || state>2)return 0;
+    unsigned bars = percent ? (percent + 19U) / 20U : 1;
+    return patterns[bars-1];
+}
+
+/* Overlay only the color/player-light fields in 47-byte SetStateData.
+ * Preserve triggers, rumble, audio, mute, and the required primer animation. */
+static inline bool controller_lights_apply(uint8_t *data, uint16_t len,
+                                           uint8_t mode, uint8_t percent,
+                                           uint8_t state)
+{
+    uint8_t rgb[3];
+    if(len<47 || !mode_light_color(mode,rgb))return false;
+    data[1]=(data[1]&~0x08)|0x14;
+    data[43]=battery_player_lights(percent,state);
+    for(unsigned i=0;i<3;i++)data[44+i]=rgb[i];
     return true;
 }
 #endif

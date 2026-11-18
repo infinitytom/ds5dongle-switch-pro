@@ -13,7 +13,6 @@ export const fields = [
  ['enable_wake','USB 远程唤醒（DS 模式）',17,0,1,1,'bool'],
  ['trigger_reduce','自适应扳机功率降低',18,0,10],['lock_volume','锁定音量',19,0,1,1,'bool'],
  ['usb_stealth','蓝牙连接前隐藏 USB',21,0,1,1,'bool'],
- ['led_r','灯条红色',22,0,255],['led_g','灯条绿色',23,0,255],['led_b','灯条蓝色',24,0,255],
  ['tp_mode','触摸板模式（DS 模式）',25,0,4,1,['关闭','方向键','左鼠标 / 右方向','左方向 / 右鼠标','分区']],
  ['tp_mode_enabled_mask','触摸板可轮换模式位掩码',26,1,31],
  ['tp_mouse_sensitivity','触摸板鼠标灵敏度',27,1,32],

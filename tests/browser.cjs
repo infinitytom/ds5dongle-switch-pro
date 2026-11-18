@@ -16,7 +16,7 @@ const assert=require('node:assert/strict');
        if(window.failReport===id)throw Error('fixture read failed');
        let data;
        if(id===0xf7)data=new Uint8Array([id,...cfg]);
-       if(id===0xf8)data=new Uint8Array([id,...new TextEncoder().encode(window.legacyFirmware?'TEST Pro-dev1':'TEST Pro-dev1 r11')]);
+       if(id===0xf8)data=new Uint8Array([id,...new TextEncoder().encode(window.legacyFirmware?'TEST Pro-dev1':'TEST Pro-dev1 r14')]);
        if(id===0xf9){data=new Uint8Array(64);data[0]=id;data[1]=210;data[12]=window.fixtureBattery??80;data[14]=0xd5;data[15]=2;data[16]=activeMode;data[17]=1;data[18]=[3,4].includes(activeMode)?0x30:activeMode===6?9:activeMode===5?0:1;data[19]=1;data[32]=data[33]=data[34]=data[35]=128;data[39]=8;data[52]=window.noXbox?7:window.noPro2?31:window.noMotion?63:127;data[53]=saveStatus;data[54]=0xd9;data[55]=8;data[56]=60;data[58]=1;data[62]=7;data[63]=1;}
        if(id===0xfa){
          data=new Uint8Array(64);data[0]=id;data[1]=0xa8;data[2]=1;
@@ -75,6 +75,9 @@ const assert=require('node:assert/strict');
  const xboxFilter=await page.evaluate(()=>window.hidFilters.find(f=>f.vendorId===0x045e));
  assert.equal(xboxFilter.productId,0x028e);assert.equal(xboxFilter.usagePage,0xff00);
  assert.match(await page.locator('#battery').innerText(),/80/);
+ assert.match(await page.locator('#battery-detail').innerText(),/下方 4 灯/);
+ assert.match(await page.locator('#mode-detail').innerText(),/两侧白灯/);
+ assert.equal(await page.locator('#led_r').count(),0,'r14 uses mode colors instead of a conflicting RGB control');
  assert.match(await page.locator('#receiver-hint').innerText(),/手柄已连接/);
  await page.evaluate(()=>{window.fixtureBattery=10;});
  await page.getByRole('button',{name:'重新读取',exact:true}).click();

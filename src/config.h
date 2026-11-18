@@ -29,9 +29,9 @@ struct __attribute__((packed)) config_body {
     uint8_t lock_volume;          /* bool       — ignore host volume changes */
     uint8_t dse_detected;         /* bool — Auto mode remembers last detection */
     uint8_t usb_stealth;          /* bool — hide USB until BT controller connects */
-    uint8_t led_r;                /* [0-255] custom LED red   (0xFF = default white) */
-    uint8_t led_g;                /* [0-255] custom LED green (0xFF = default white) */
-    uint8_t led_b;                /* [0-255] custom LED blue  (0xFF = default white) */
+    uint8_t led_r;                /* legacy RGB: layout retained; r14 uses mode color */
+    uint8_t led_g;
+    uint8_t led_b;
     uint8_t tp_mode;              /* 0=off, 1=dpad, 2=Lmouse+Rdpad, 3=Ldpad+Rmouse, 4=split */
     uint8_t tp_mode_enabled_mask; /* bitmask of enabled modes (bit0-bit4) */
     uint8_t tp_mouse_sensitivity; /* [1-32], default 8 */

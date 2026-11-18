@@ -140,8 +140,8 @@ bool bt_hid_host_get_connected_addr(uint8_t *addr);
 /**
  * Try to reconnect to a previously bonded BR/EDR device.
  * Skips inquiry and directly initiates an ACL connection.
- * @return 0 if a bonded device was found and connection initiated,
- *         -1 if no bonded device exists
+ * @return 0 if a bonded device was found and connection queued,
+ *         -1 if no bond exists or another connection path is active
  */
 int bt_hid_host_try_reconnect(void);
 

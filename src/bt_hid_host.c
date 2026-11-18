@@ -824,8 +824,12 @@ static void conn_connected(struct bt_conn *conn, uint8_t err)
         LOG_ERR("[BT] Connection failed: 0x%02x\n", err);
         if (hid_ctx.conn != NULL && conn != hid_ctx.conn)
             return;
+        if (hid_ctx.conn) bt_conn_unref(hid_ctx.conn);
         hid_ctx.conn = NULL;
         hid_ctx.outgoing = false;
+        hid_ctx.connect_pending = false;
+        hid_ctx.security_pending = false;
+        hid_ctx.sdp_pending = false;
         bt_br_set_connectable(true);
         bt_br_set_discoverable(true);
         LOG_INF("[BT] Re-enabled page scan after failed connection\n");
@@ -1302,6 +1306,10 @@ int bt_hid_host_init(const struct bt_hid_host_config *config)
 
     blacklist_load();
     bonded_list_load();
+    if (bonded_count > 0) {
+        bt_addr_copy(&hid_ctx.target_addr, &bonded_list[active_idx]);
+        hid_ctx.has_target = true;
+    }
 
     /* Register L2CAP servers so the controller can initiate reconnection
      * (matching DS5Dongle's l2cap_register_service for both PSMs). */
@@ -1746,9 +1754,16 @@ int bt_hid_host_connect(const uint8_t *addr)
         return -1;
     }
 
-    /* Bouffalo SDK's bt_conn_create_br does NOT return a caller
-     * reference (unlike standard Zephyr). SDK examples never call
-     * bt_conn_unref after bt_conn_create_br. */
+    /* SDK returns a borrowed pointer. Retain our own reference now, rather
+     * than only after Connection Complete: the timeout path must be able to
+     * cancel an ACL that is still paging. Otherwise disconnect() sees NULL
+     * and leaves CONNECTING stuck forever. The completion/failure/teardown
+     * paths release this reference exactly once. An early callback may have
+     * already installed the reference or ended this attempt. */
+    taskENTER_CRITICAL();
+    if (!hid_ctx.conn && hid_ctx.outgoing && hid_ctx.state == BT_HID_STATE_CONNECTING)
+        hid_ctx.conn = bt_conn_ref(conn);
+    taskEXIT_CRITICAL();
     LOG_DBG("[BT] connect EXIT OK\n");
     return 0;
 }
@@ -1761,6 +1776,12 @@ void bt_hid_host_disconnect(void)
         set_state(BT_HID_STATE_DISCONNECTING);
         bt_conn_disconnect(hid_ctx.conn,
                            BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+    } else if (hid_ctx.state != BT_HID_STATE_CONNECTED) {
+        hid_ctx.connect_pending = false;
+        hid_ctx.outgoing = false;
+        bt_br_set_connectable(true);
+        bt_br_set_discoverable(true);
+        set_state(BT_HID_STATE_IDLE);
     }
 }
 
@@ -2010,7 +2031,7 @@ bool bt_hid_host_get_connected_addr(uint8_t *addr)
 
 int bt_hid_host_try_reconnect(void)
 {
-    if (hid_ctx.state != BT_HID_STATE_IDLE)
+    if (hid_ctx.state != BT_HID_STATE_IDLE || hid_ctx.conn || hid_ctx.connect_pending)
         return -1;
 
     if (bonded_count == 0) {
@@ -2028,11 +2049,13 @@ int bt_hid_host_try_reconnect(void)
     bt_addr_copy(&hid_ctx.target_addr, addr);
     hid_ctx.has_target = true;
 
-    /* DS5Dongle approach: don't actively page the controller.
-     * Stay connectable and let the controller reconnect to us.
-     * The controller will create ACL + L2CAP channels. */
-    LOG_INF("[BT] Bonded device [%d/%d] %s — waiting for controller to reconnect "
-           "(page scan enabled)\n", active_idx, bonded_count, addr_str);
+    /* Preserve the existing key and connect to the selected peer directly.
+     * poll_connect cancels this request if an incoming ACL wins the race. */
+    bt_addr_copy(&hid_ctx.pending_addr, addr);
+    hid_ctx.connect_pending = true;
+    hid_ctx.connect_pending_tick = 0;
+    LOG_INF("[BT] Bonded device [%d/%d] %s — outgoing reconnect queued\n",
+           active_idx, bonded_count, addr_str);
     return 0;
 }
 
