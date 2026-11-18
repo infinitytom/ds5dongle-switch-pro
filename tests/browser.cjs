@@ -9,9 +9,10 @@ const assert=require('node:assert/strict');
    window.writes=[];
    let profile=0,activeMode=2,saveStatus=0,testPattern=0,testUntil=0;
    const listeners={};
-   const device={opened:false,vendorId:0x054c,productId:0x0ce6,productName:'DS5 Dongle test fixture',collections:[{featureReports:[{reportId:0xf7}]}],
-     async open(){this.opened=true},async close(){this.opened=false},
+   let device={opened:false,present:true,vendorId:0x054c,productId:0x0ce6,productName:'DS5 Dongle test fixture',collections:[{featureReports:[{reportId:0xf7}]}],
+     async open(){if(!this.present)throw Error('stale HID enumeration');this.opened=true},async close(){this.opened=false},
      async receiveFeatureReport(id){
+       if(!this.present)throw Error('stale HID enumeration');
        if(window.failReport===id)throw Error('fixture read failed');
        let data;
        if(id===0xf7)data=new Uint8Array([id,...cfg]);
@@ -33,13 +34,34 @@ const assert=require('node:assert/strict');
        if(id===0xf6&&data[0]===1){cfg.set(data.slice(1,30));saveStatus=0;}
        if(id===0xf6&&data[0]===2)saveStatus=2;
        if(id===0xf6&&data[0]===0x10){testPattern=data[1];testUntil=testPattern?Date.now()+(data[2]|data[3]<<8):0;}
-       if(id===0xf6&&data[0]===3){activeMode=cfg[12];this.opened=false;this.vendorId=activeMode===5?0x1209:[3,4,6].includes(activeMode)?0x057e:0x054c;this.productId=activeMode===5?0xdb05:activeMode===6?0x2069:[3,4].includes(activeMode)?0x2009:0x0ce6;listeners.disconnect?.({device:this});setTimeout(()=>listeners.connect?.({device:this}),100);}
+       if(id===0xf6&&data[0]===3){
+         enumerate(cfg[12]);
+         if(window.resetTransferError){this.opened=true;throw Error('device disconnected during control transfer');}
+       }
        if(id===0xfb&&data[0]===3)profile=data[1];
      }
    };
+   function enumerate(mode){
+     const previous=device;previous.opened=false;previous.present=false;
+     activeMode=mode;cfg[12]=mode;
+     device={...previous,opened:false,present:true,
+       vendorId:mode===5?0x1209:[3,4,6].includes(mode)?0x057e:0x054c,
+       productId:mode===5?0xdb05:mode===6?0x2069:[3,4].includes(mode)?0x2009:mode===1?0x0df2:0x0ce6};
+     window.fixtureDevice=device;
+     listeners.disconnect?.({device:previous});
+     setTimeout(()=>listeners.connect?.({device}),100);
+   }
    window.fixtureDevice=device;
+   window.shortcutFixture=enumerate;
    window.disconnectFixture=()=>{device.opened=false;listeners.disconnect?.({device});};
-   Object.defineProperty(navigator,'hid',{value:{async requestDevice(options){window.hidFilters=options.filters;return [device]},async getDevices(){return [device]},addEventListener(name,fn){listeners[name]=fn;}}});
+   Object.defineProperty(navigator,'hid',{value:{async requestDevice(options){window.hidFilters=options.filters;window.needsAuthorization=false;return [device]},async getDevices(){
+     if(window.needsAuthorization)return [];
+     if(window.wrongModeFirst){
+       const wrong={...device,opened:false,async receiveFeatureReport(id){const result=await device.receiveFeatureReport(id);if(id===0xf9)result.setUint8(16,3);return result;},async close(){this.opened=false;window.wrongModeClosed=true;}};
+       return [wrong,device];
+     }
+     return [device];
+   },addEventListener(name,fn){listeners[name]=fn;}}});
  });
  await page.goto(process.env.TEST_URL||'http://127.0.0.1:8765');
  await page.waitForFunction(()=>!document.getElementById('save').disabled);
@@ -107,9 +129,12 @@ const assert=require('node:assert/strict');
  await page.setViewportSize({width:1200,height:1000});
  await page.locator('[data-view="overview"]').click();
  await page.locator('#controller_mode').selectOption('4');
+ await page.evaluate(()=>{window.wrongModeFirst=true;window.resetTransferError=true;});
  await page.getByRole('button',{name:'保存并应用',exact:true}).click();
  await page.waitForFunction(()=>document.getElementById('notice-title').textContent==='模式已应用');
  assert.equal(await page.locator('#active-mode').innerText(),'Pro + USB 麦克风');
+ assert.equal(await page.evaluate(()=>window.wrongModeClosed),true,'wrong runtime mode must be closed without ending reconnect');
+ await page.evaluate(()=>{window.wrongModeFirst=false;window.resetTransferError=false;});
  await page.locator('[data-view="audio"]').click();
  await page.screenshot({path:'docs/audio-config.png',fullPage:true});
  await page.evaluate(()=>{
@@ -158,6 +183,21 @@ const assert=require('node:assert/strict');
  await page.waitForFunction(()=>document.getElementById('notice-title').textContent==='模式已应用');
  await page.waitForFunction(()=>document.getElementById('active-mode').textContent==='自动 / DS・Edge'&&!document.getElementById('save').disabled);
  assert.equal(await page.locator('#active-mode').innerText(),'自动 / DS・Edge');
+ // All identities must reconnect using fresh HIDDevice objects, including
+ // mode switches made on the controller while the page remains open.
+ for(const mode of [0,1,2,3,4,5,6,2]){
+   await page.evaluate(mode=>window.shortcutFixture(mode),mode);
+   await page.waitForFunction(mode=>Number(document.getElementById('controller_mode').value)===mode&&!document.getElementById('save').disabled,mode);
+ }
+ await page.locator('#controller_mode').selectOption('1');
+ await page.evaluate(()=>{window.needsAuthorization=true;});
+ await page.getByRole('button',{name:'保存并应用',exact:true}).click();
+ await page.waitForFunction(()=>document.getElementById('connect').textContent==='授权新模式接收器'&&!document.getElementById('connect').disabled);
+ await page.getByRole('button',{name:'授权新模式接收器',exact:true}).click();
+ await page.waitForFunction(()=>document.getElementById('active-mode').textContent==='DualSense Edge'&&!document.getElementById('save').disabled);
+ await page.locator('#controller_mode').selectOption('2');
+ await page.getByRole('button',{name:'保存并应用',exact:true}).click();
+ await page.waitForFunction(()=>document.getElementById('active-mode').textContent==='自动 / DS・Edge'&&!document.getElementById('save').disabled);
  await page.evaluate(()=>{window.noPro2=true;});
  await page.getByRole('button',{name:'重新读取',exact:true}).click();
  await page.waitForFunction(()=>!document.getElementById('save').disabled);

@@ -705,8 +705,7 @@ static void bt_task(void *arg)
                     btn_fsm = BTN_IDLE;
                     btn_press_samples = 0;
                     LOG_INF("[BTN] IO2 released after hold — resetting\n");
-                    vTaskDelay(pdMS_TO_TICKS(300));
-                    GLB_SW_System_Reset();
+                    usb_gamepad_reboot();
                 }
                 break;
 
@@ -818,8 +817,7 @@ static void bt_task(void *arg)
             dse_mode_changed = false;
             config_save();
             LOG_WRN("[MAIN] Controller type changed, resetting...\n");
-            vTaskDelay(pdMS_TO_TICKS(100));
-            GLB_SW_System_Reset();
+            usb_gamepad_reboot();
         }
 
         /* React to disable_led config toggle in real-time */
@@ -1184,8 +1182,7 @@ static void usb_task(void *arg)
                 config_get()->controller_mode = (uint8_t)mode_target;
                 if (config_save()) {
                     LOG_INF("[MODE] Shortcut: %u -> %u\n", previous, config_controller_mode());
-                    vTaskDelay(pdMS_TO_TICKS(100));
-                    GLB_SW_System_Reset();
+                    usb_gamepad_reboot();
                 } else {
                     config_get()->controller_mode = previous;
                     LOG_ERR("[MODE] Save failed; keeping mode %u\n", previous);

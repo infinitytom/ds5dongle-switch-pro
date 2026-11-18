@@ -10,6 +10,8 @@
 
 从 [Releases](https://github.com/infinitytom/ds5dongle-switch-pro/releases) 下载：
 
+**最新：alpha.14 / r13（模式切换修复）**。切换模式时先明确断开 USB 再重启，网页释放旧连接并同时核对 USB 身份与运行模式，改善切换后网页失联或主机沿用旧模式的问题。请同时更新固件与配置包。已在 r13 纯 Pro 模式确认蓝牙连接和实时输入；全部模式切换、持续游戏及主机兼容仍待验收。
+
 - `ds5dongle-switch-pro-lctech616-fs-*.zip`：LCTech BL616 Full-Speed 实验固件、boot2、分区文件、刷机说明与校验值。
 - `ds5dongle-local-config-*.zip`：电脑离线配置工具，包含赞赏码，不依赖在线配置网站。
 - 发布页的 Source code：与该版本对应的完整项目源码。

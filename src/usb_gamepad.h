@@ -52,5 +52,7 @@ void usb_gamepad_process_deferred(void);
 
 void usb_soft_disconnect(void);
 void usb_soft_connect(void);
+/* Task context only: finish EP0, detach long enough for the host, then reset. */
+void usb_gamepad_reboot(void);
 
 #endif /* USB_GAMEPAD_H */

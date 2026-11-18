@@ -50,7 +50,12 @@ function activeMode(){
   const saved=original[12];
   return modeIdentity(saved,device)?saved:modeIdentity(6,device)?6:modeIdentity(5,device)?5:device?.vendorId===0x057e?3:0;
 }
-function modeIdentity(mode,d){return mode===6?d?.vendorId===0x057e&&d?.productId===0x2069:mode===5?(d?.vendorId===0x1209&&d?.productId===0xdb05)||(d?.vendorId===0x045e&&d?.productId===0x028e):[3,4].includes(mode)?d?.vendorId===0x057e&&d?.productId===0x2009:d?.vendorId===0x054c;}
+function modeIdentity(mode,d){
+  if(mode===6)return d?.vendorId===0x057e&&d?.productId===0x2069;
+  if(mode===5)return (d?.vendorId===0x1209&&d?.productId===0xdb05)||(d?.vendorId===0x045e&&d?.productId===0x028e);
+  if([3,4].includes(mode))return d?.vendorId===0x057e&&d?.productId===0x2009;
+  return d?.vendorId===0x054c&&(mode===0?d.productId===0x0ce6:mode===1?d.productId===0x0df2:mode===2&&[0x0ce6,0x0df2].includes(d.productId));
+}
 function mustReconnect(next){
   if(next[12]!==activeMode())return true;
   if(!original)return false;
@@ -214,9 +219,13 @@ async function connectTo(selected){
   clearReadState();
   if(device?.opened&&device!==selected){try{await device.close();}catch{/* Previous enumeration is gone. */}}
   device=selected;if(!device.opened)await device.open();await read();
-  const expected=pendingMode;pendingMode=null;clearTimeout(reconnectTimer);
-  const matched=expected===null||activeMode()===expected;
-  if(!matched)announce('设备重新连接，但模式与目标不同','请查看连接诊断并导出记录；本次没有继续写入配置。','warning');
+  const expected=pendingMode;
+  const matched=expected===null||(activeMode()===expected&&modeIdentity(expected,selected));
+  if(matched){pendingMode=null;clearTimeout(reconnectTimer);}
+  else{
+    await selected.close().catch(()=>{});clearReadState();
+    announce('正在等待目标模式','检测到旧模式或其他接收器，继续等待目标 USB 身份。','warning');
+  }
   return matched;
 }
 $('connect').onclick=()=>run(async()=>{
@@ -254,8 +263,11 @@ async function reconnectScan(){
   if(Date.now()>reconnectUntil){announce('等待新模式授权','若浏览器尚未授权此 USB 身份，请点击右上角「授权新模式接收器」。','warning');enableControls();return;}
   if(!busy&&!polling&&navigator.hid?.getDevices){
     const granted=await navigator.hid.getDevices().catch(()=>[]);
-    const selected=granted.find(d=>supportsConfig(d)&&modeIdentity(pendingMode,d));
-    if(selected){await run(async()=>{if(await connectTo(selected))announce('模式已应用',`已重新连接：${labels[activeMode()]}。${activeMode()===6?'Pro 2 为实验协议，主机兼容与耳麦音频尚未通过。':'无需手动拔插接收器。'}`,'success');});if(pendingMode===null)return;}
+    for(const selected of granted.filter(d=>supportsConfig(d)&&modeIdentity(pendingMode,d))){
+      let matched=false;
+      await run(async()=>{matched=await connectTo(selected);if(matched)announce('模式已应用',`已重新连接：${labels[activeMode()]}。${activeMode()===6?'Pro 2 为实验协议，主机兼容与耳麦音频尚未通过。':'无需手动拔插接收器。'}`,'success');});
+      if(matched||pendingMode===null)return;
+    }
   }
   reconnectTimer=setTimeout(reconnectScan,500);
 }
@@ -281,7 +293,10 @@ async function save(forceReconnect=false){
   log(`设置已保存，切换至 ${labels[pendingMode]}，等待重新枚举`);
   announce('设置已保存 · 正在应用模式','接收器会重启并重新枚举 USB。已授权的身份将自动连接；新身份需要在浏览器中授权。');
   try{await send(0xf6,new Uint8Array([3]));}
-  catch(error){if(device?.opened){pendingMode=null;throw error;}}
+  catch(error){log(`重启命令传输结束：${error.message}；继续核对重新枚举后的模式。`);}
+  // Each enumeration creates a new HIDDevice. Release the old handle even if
+  // the browser has not delivered its disconnect event yet.
+  try{if(device?.opened)await device.close();}catch{}
   clearReadState();reconnectTimer=setTimeout(reconnectScan,700);
 }
 $('settings').onsubmit=e=>{e.preventDefault();run(()=>save(false));};
@@ -296,7 +311,7 @@ $('import').onchange=e=>run(async()=>{
   if(json.format!=='ds5-local-v1'||!Array.isArray(json.bytes)||json.bytes.some(x=>!Number.isInteger(x)||x<0||x>255))throw Error('无效的配置文件');
   showConfig(encode(original,decode(new Uint8Array(json.bytes))));announce('配置已载入表单','点击「保存并应用」后才会写入接收器。');
 });
-$('diagnostic-export').onclick=()=>download('ds5-diagnostics.json',{app:'alpha.13',time:new Date().toISOString(),firmware,usb:device?{vendorId:device.vendorId,productId:device.productId,productName:device.productName}:null,config:original?decode(original):null,diagnostic,motionDiagnostic,events});
+$('diagnostic-export').onclick=()=>download('ds5-diagnostics.json',{app:'alpha.14',time:new Date().toISOString(),firmware,usb:device?{vendorId:device.vendorId,productId:device.productId,productName:device.productName}:null,config:original?decode(original):null,diagnostic,motionDiagnostic,events});
 
 $('readmap').onclick=()=>run(async()=>{
   await send(0xfb,new Uint8Array([3,Number($('profile').value)]));

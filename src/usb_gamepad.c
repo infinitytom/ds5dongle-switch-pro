@@ -1104,8 +1104,7 @@ void usb_gamepad_process_deferred(void)
         }
         usb_config_save_pending = false;
         LOG_INF("[USB] CMD 0x03: USB reconnect via reset\n");
-        vTaskDelay(pdMS_TO_TICKS(100));
-        GLB_SW_System_Reset();
+        usb_gamepad_reboot();
     }
     if (usb_config_save_pending) {
         usb_config_save_pending = false;
@@ -1588,10 +1587,10 @@ void usbd_hid_get_report(uint8_t busid, uint8_t intf, uint8_t report_id,
             *len  = 1 + cfg_len;
             LOG_INF("[USB] GET_REPORT(0xF7) → config %u bytes\n", cfg_len);
         } else if (report_id == 0xF8) {
-            uint16_t ver_len = strlen(FIRMWARE_VERSION " Pro-dev1 r12");
+            uint16_t ver_len = strlen(FIRMWARE_VERSION " Pro-dev1 r13");
             if (ver_len > FEATURE_DATA_MAX)
                 ver_len = FEATURE_DATA_MAX;
-            memcpy(feature_resp_buf + 1, FIRMWARE_VERSION " Pro-dev1 r12", ver_len);
+            memcpy(feature_resp_buf + 1, FIRMWARE_VERSION " Pro-dev1 r13", ver_len);
             *data = feature_resp_buf;
             *len  = 1 + ver_len;
             LOG_INF("[USB] GET_REPORT(0xF8) → firmware version\n");
@@ -1861,6 +1860,21 @@ void usbd_hid_set_report(uint8_t busid, uint8_t intf, uint8_t report_id,
 
 /* ---- USB soft plug/unplug via PHY UNPLUG bit ---- */
 
+static volatile bool usb_rebooting;
+
+void usb_gamepad_reboot(void)
+{
+    usb_rebooting = true;
+    /* Let the command's control status stage complete before removing USB.
+     * A CPU reset alone does not guarantee a host-visible detach; Windows can
+     * otherwise keep the old HID handles, descriptors and gamepad driver. */
+    vTaskDelay(pdMS_TO_TICKS(100));
+    usb_soft_disconnect();
+    usb_configured = false;
+    vTaskDelay(pdMS_TO_TICKS(300));
+    GLB_SW_System_Reset();
+}
+
 void usb_soft_disconnect(void)
 {
     volatile uint32_t *phy_tst = (volatile uint32_t *)(USB_BASE + 0x114);
@@ -1870,6 +1884,7 @@ void usb_soft_disconnect(void)
 
 void usb_soft_connect(void)
 {
+    if (usb_rebooting) return;
     volatile uint32_t *phy_tst = (volatile uint32_t *)(USB_BASE + 0x114);
     *phy_tst &= ~1u;
     LOG_INF("[USB] Soft connect (stealth)\n");
